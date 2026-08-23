@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files — NEVER commit real secrets
+.env
+.env.local
+.env.*.local
+.env.staging
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test coverage
+coverage/
+
+# Original delivery ZIPs are intentionally tracked in 07_ARCHIVE/original-zips/
+# — do not ignore that folder.

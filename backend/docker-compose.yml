@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: wazzar-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wazzar_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Runs the backend from its Dockerfile against the postgres service
+  # above. Not part of the original compose file — added alongside the
+  # Dockerfile so the whole stack can be brought up with one command
+  # for local testing, not just the database. Needs a real backend/.env
+  # (copy backend/.env.example) — this does not supply one for you.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: wazzar-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Overrides whatever DATABASE_URL is in .env so it resolves to
+      # this compose network's postgres service, not localhost.
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wazzar_db
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

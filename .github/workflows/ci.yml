@@ -1,0 +1,74 @@
+name: CI
+
+# Runs on every push and pull request against main. This is the CI
+# pipeline flagged as missing in docs/delivery-notes/MASTER_GAPS_AND_ROADMAP.md
+# ("Phase 2.5 — Hardening") — until now, every check in this repo's
+# delivery history (npm test, tsc --noEmit, eslint, npm run build ×4
+# apps) was run manually on request. This automates exactly those same
+# checks so a regression can't sit undetected until someone happens to
+# test by hand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend — test, typecheck, lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint "src/**/*.ts"
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  frontend:
+    name: Frontend — build & test
+    runs-on: ubuntu-latest
+    strategy:
+      # One app failing (e.g. a bad merge into apps/rider) shouldn't hide
+      # the results for the other three — fail-fast off so every app's
+      # status is visible in the same CI run.
+      fail-fast: false
+      matrix:
+        app: [customer, admin, rider, business]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+
+      - run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
