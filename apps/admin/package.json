@@ -1,11 +1,12 @@
 {
   "name": "wazzar-admin",
   "version": "1.0.0",
-  "description": "WAZZAR Admin Console — platform-wide operations (internal only)",
+  "description": "WAZZAR Admin Console \u2014 platform-wide operations (internal only)",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
     "preview": "vite preview",
     "test": "vitest run",
     "deploy": "npm run build && netlify deploy --prod"

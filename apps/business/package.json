@@ -1,11 +1,12 @@
 {
   "name": "wazzar-business",
   "version": "1.0.0",
-  "description": "WAZZAR Business Dashboard — manage a merchant account's deliveries",
+  "description": "WAZZAR Business Dashboard \u2014 manage a merchant account's deliveries",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
     "preview": "vite preview",
     "test": "vitest run",
     "deploy": "npm run build && netlify deploy --prod"
