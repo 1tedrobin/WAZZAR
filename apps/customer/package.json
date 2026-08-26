@@ -1,11 +1,12 @@
 {
   "name": "wazzar-customer",
   "version": "1.0.0",
-  "description": "WAZZAR Customer App — send a delivery",
+  "description": "WAZZAR Customer App \u2014 send a delivery",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
     "preview": "vite preview",
     "test": "vitest run",
     "deploy": "npm run build && netlify deploy --prod"

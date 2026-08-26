@@ -1,11 +1,12 @@
 {
   "name": "wazzar-rider",
   "version": "1.0.0",
-  "description": "WAZZAR Rider App — accept and fulfil deliveries",
+  "description": "WAZZAR Rider App \u2014 accept and fulfil deliveries",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
     "preview": "vite preview",
     "test": "vitest run",
     "deploy": "npm run build && netlify deploy --prod"
