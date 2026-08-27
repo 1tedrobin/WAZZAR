@@ -99,7 +99,16 @@ export class PaymentsService {
 
     if (dto.method === PaymentMethod.CASH) {
       payment.status = PaymentStatus.PENDING_CASH_COLLECTION;
-      return this.paymentsRepo.save(payment);
+      // Cash is accepted as a payment method at checkout time — the
+      // actual cash changes hands on delivery (see confirmCashCollection
+      // below) — but the shipment itself needs to open up to riders
+      // immediately, same as a successful M-Pesa/Stripe payment does.
+      // Same one-transaction pattern as the webhook handlers below.
+      return this.dataSource.transaction(async (manager) => {
+        const saved = await manager.save(Payment, payment);
+        await this.shipmentsService.confirmAfterPayment(payment.shipmentId, manager);
+        return saved;
+      });
     }
 
     try {

@@ -215,28 +215,36 @@ export class ShipmentsService {
     return saved;
   }
 
-  // Called by PaymentsService once a payment webhook lands as COMPLETED —
-  // the one remaining gap flagged in the README's Piece 11 "Known
-  // simplifications". Lives here rather than in Payments so the
-  // QUOTED -> CONFIRMED transition still goes through this module's own
-  // state machine (isValidShipmentStatusTransition) instead of Payments
-  // reaching in and mutating shipment.status directly.
+  // Called by PaymentsService once a payment is confirmed — either a
+  // provider webhook lands as COMPLETED, or (for CASH) the payment is
+  // accepted at checkout time, since cash isn't collected until delivery
+  // but the shipment still needs to reach riders immediately. The one
+  // remaining gap flagged in the README's Piece 11 "Known
+  // simplifications". Lives here rather than in Payments so both status
+  // transitions still go through this module's own state machine
+  // (isValidShipmentStatusTransition) instead of Payments reaching in
+  // and mutating shipment.status directly.
   //
-  // Deliberately tolerant, not throwing: a shipment might already be
-  // CONFIRMED (a retried webhook that slipped past the payment-level
-  // idempotency check some other way) or might have moved past QUOTED
-  // entirely (e.g. cancelled) by the time the payment provider calls
-  // back. Either way that's a no-op here, not a failure — a payment
+  // Moves QUOTED -> CONFIRMED -> ASSIGNMENT_PENDING in one call: CONFIRMED
+  // is a transient bookkeeping state (payment succeeded), not something a
+  // human needs to act on before a rider can see the shipment, so there's
+  // no reason to leave it sitting there. Both transitions are valid moves
+  // per shipment-status.transitions.ts, recorded as two separate history
+  // rows so the audit trail still shows both actually happened.
+  //
+  // Deliberately tolerant, not throwing: a shipment might already be past
+  // QUOTED (a retried webhook, or cancelled in the meantime) by the time
+  // this runs. Either way that's a no-op here, not a failure — a payment
   // that already succeeded shouldn't get an error surfaced to the
-  // provider just because the shipment side has nothing to do.
+  // provider just because the shipment side has nothing left to do.
   //
   // Accepts an optional EntityManager so PaymentsService can run this
   // inside the same DB transaction as the payment save (see Piece 12 in
-  // the README) — the payment write and this shipment write either both
-  // commit or both roll back. Falls back to this service's own injected
+  // the README) — the payment write and both shipment writes either all
+  // commit or all roll back. Falls back to this service's own injected
   // repos when called without one, so it still works standalone (and in
   // the existing unit tests, which mock those repos directly).
-  async confirmAfterPayment(shipmentId: string, manager?: EntityManager): Promise<void> {
+   async confirmAfterPayment(shipmentId: string, manager?: EntityManager): Promise<void> {
     const shipmentsRepo = manager ? manager.getRepository(Shipment) : this.shipmentsRepo;
     const historyRepo = manager
       ? manager.getRepository(ShipmentStatusHistory)
@@ -247,19 +255,39 @@ export class ShipmentsService {
       return;
     }
 
-    shipment.status = ShipmentStatus.CONFIRMED;
-    await shipmentsRepo.save(shipment);
+    // Built as fresh objects rather than mutating `shipment` in place
+    // twice — two separate .save() calls need two distinct snapshots,
+    // not the same reference mutated out from under the first call.
+    const confirmedShipment = { ...shipment, status: ShipmentStatus.CONFIRMED };
+    await shipmentsRepo.save(confirmedShipment);
 
     // changedBy is null: this transition was driven by a payment
-    // provider webhook, not a logged-in user action.
-    const entry = historyRepo.create({
+    // provider webhook (or cash acceptance), not a logged-in user action.
+    const confirmedEntry = historyRepo.create({
       shipmentId,
       status: ShipmentStatus.CONFIRMED,
       changedBy: null,
       reason: 'Payment completed',
     });
-    await historyRepo.save(entry);
-  }
+    await historyRepo.save(confirmedEntry);
+
+    // Immediately continue on to ASSIGNMENT_PENDING — see the method
+    // comment above for why this isn't left as a separate manual step.
+    if (!isValidShipmentStatusTransition(confirmedShipment.status, ShipmentStatus.ASSIGNMENT_PENDING)) {
+      return;
+    }
+
+    const queuedShipment = { ...confirmedShipment, status: ShipmentStatus.ASSIGNMENT_PENDING };
+    await shipmentsRepo.save(queuedShipment);
+
+    const queuedEntry = historyRepo.create({
+      shipmentId,
+      status: ShipmentStatus.ASSIGNMENT_PENDING,
+      changedBy: null,
+      reason: 'Ready for rider assignment',
+    });
+    await historyRepo.save(queuedEntry);
+   }
 
   // A rider claims an ASSIGNMENT_PENDING shipment for themselves. No
   // dispatcher/admin override yet — see the README's "Known
