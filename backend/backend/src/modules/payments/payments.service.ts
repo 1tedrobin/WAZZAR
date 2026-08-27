@@ -106,12 +106,7 @@ export class PaymentsService {
       const result = await this.callProviderInitiate(dto, payment);
       payment.status = PaymentStatus.PROCESSING;
       payment.externalId = result.transactionId;
-      const saved = await this.paymentsRepo.save(payment);
-      // Set after save (see the field's own comment on Payment) so it
-      // rides along on the response without ever being written to the
-      // payments table.
-      saved.isMock = result.isMock;
-      return saved;
+      return await this.paymentsRepo.save(payment);
     } catch (err) {
       payment.status = PaymentStatus.FAILED;
       payment.errorMessage = err instanceof Error ? err.message : 'Provider error';
