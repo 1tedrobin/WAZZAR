@@ -124,6 +124,43 @@ export class PaymentsService {
     return payment;
   }
 
+  // GET /payments/by-shipment/:shipmentId — lets the assigned rider (or
+  // admin, or the owning customer) look up the payment tied to a
+  // shipment without needing to already know the payment's own id. The
+  // rider app has no other way to discover a shipment's paymentId (see
+  // apps/rider WIRING_NOTES.md) or whether it's CASH and still pending
+  // collection — this is what a "collect cash" button on a delivery
+  // screen needs to call before it can call collectCash().
+  //
+  // Deliberately more permissive than assertCanAccess() above: this one
+  // allows the assigned rider too, since the whole point is letting them
+  // discover a cash payment they need to collect on. Reuses
+  // ShipmentsService.isAssignedRiderOrAdmin rather than duplicating that
+  // check here — same rule PaymentsService.confirmCashCollection already
+  // trusts for the same rider/shipment relationship.
+  //
+  // Returns null (not 404) when no payment exists yet for the shipment —
+  // that's a normal state (a shipment can be picked up and delivered
+  // before any payment is ever initiated), not an error.
+  async findForShipment(shipmentId: string, requester: JwtPayload): Promise<Payment | null> {
+    const payment = await this.paymentsRepo.findOne({
+      where: { shipmentId },
+      order: { createdAt: 'DESC' },
+    });
+    if (!payment) {
+      return null;
+    }
+
+    if (payment.customerId !== requester.sub) {
+      const canView = await this.shipmentsService.isAssignedRiderOrAdmin(shipmentId, requester);
+      if (!canView) {
+        throw new ForbiddenException('You do not have access to this payment');
+      }
+    }
+
+    return payment;
+  }
+
   // POST /payments/:id/collect-cash — the rider assigned to the shipment
   // (or an admin) confirms a CASH payment was physically collected.
   // Mirrors the M-Pesa/Stripe webhooks in shape (mark COMPLETED, then

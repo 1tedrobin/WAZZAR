@@ -252,6 +252,48 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('findForShipment', () => {
+    it('returns null when the shipment has no payment yet — not an error', async () => {
+      paymentsRepo.findOne.mockResolvedValue(undefined);
+
+      const result = await service.findForShipment(SHIPMENT_ID, requester());
+      expect(result).toBeNull();
+      expect(shipmentsService.isAssignedRiderOrAdmin).not.toHaveBeenCalled();
+    });
+
+    it('returns the payment for its owning customer without checking rider/admin', async () => {
+      paymentsRepo.findOne.mockResolvedValue(payment());
+
+      const result = await service.findForShipment(SHIPMENT_ID, requester());
+      expect(result?.id).toBe('payment-1');
+      expect(shipmentsService.isAssignedRiderOrAdmin).not.toHaveBeenCalled();
+    });
+
+    it('returns the payment for the assigned rider, via isAssignedRiderOrAdmin', async () => {
+      paymentsRepo.findOne.mockResolvedValue(payment());
+      shipmentsService.isAssignedRiderOrAdmin.mockResolvedValue(true);
+
+      const result = await service.findForShipment(
+        SHIPMENT_ID,
+        requester({ sub: 'rider-user-1', roles: [Role.RIDER] }),
+      );
+      expect(result?.id).toBe('payment-1');
+      expect(shipmentsService.isAssignedRiderOrAdmin).toHaveBeenCalledWith(
+        SHIPMENT_ID,
+        expect.objectContaining({ sub: 'rider-user-1' }),
+      );
+    });
+
+    it('throws ForbiddenException for a non-owning caller who is not the assigned rider or an admin', async () => {
+      paymentsRepo.findOne.mockResolvedValue(payment());
+      shipmentsService.isAssignedRiderOrAdmin.mockResolvedValue(false);
+
+      await expect(
+        service.findForShipment(SHIPMENT_ID, requester({ sub: OTHER_CUSTOMER_ID })),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
   describe('refund', () => {
     it('throws ConflictException when the payment is not COMPLETED or PARTIALLY_REFUNDED', async () => {
       paymentsRepo.findOne.mockResolvedValue(payment({ status: PaymentStatus.PROCESSING }));

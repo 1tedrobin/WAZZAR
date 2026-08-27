@@ -10,6 +10,8 @@
    objects/promises from here.
    ======================================================================== */
 
+import { io } from "socket.io-client";
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 const TOKEN_KEY = "wazzar_rider_access_token";
@@ -234,6 +236,65 @@ export function getShipment(id) {
   return request(`/shipments/${id}`);
 }
 
+// Connects once to the backend's /dispatch Socket.IO namespace and joins
+// the shared queue room — the push counterpart to the polling loop above
+// (App.jsx's useEffect on `online && screen === "home"`). Backs both
+// events the backend broadcasts (see dispatch.gateway.ts on the
+// backend):
+//   - `dispatch:new-request` — a shipment just became ASSIGNMENT_PENDING
+//   - `dispatch:claimed` — a shipment was just claimed by someone (self
+//     or another rider/dispatcher), so it should disappear from view
+//
+// This does NOT replace the poll — it's additive. The poll stays as the
+// fallback for a socket that hasn't connected yet, dropped, or is behind
+// a network that blocks WebSocket upgrades; the socket just means a
+// rider normally sees a new request within milliseconds instead of
+// waiting up to ~4s for the next poll tick. Callers should keep treating
+// GET /shipments/available as the source of truth when in doubt (e.g. on
+// first mount, or after a reconnect) — the socket event is a nudge to
+// look, not itself a fetch of the current, complete shipment state.
+//
+// Usage:
+//   const unsubscribe = subscribeToDispatchQueue({
+//     onNewRequest: (summary) => { /* show it, same shape as one entry
+//                                     from getAvailableShipments() */ },
+//     onClaimed: (shipmentId) => { /* hide it if currently shown */ },
+//   });
+//   // later, e.g. when going offline or on unmount:
+//   unsubscribe();
+//
+// Falls back silently (returns a no-op unsubscribe, logs to console) if
+// there's no token yet or the socket can't connect — same pattern as
+// subscribeToShipmentTracking in the customer app.
+export function subscribeToDispatchQueue({ onNewRequest, onClaimed }) {
+  const token = getToken();
+  if (!token) {
+    return () => {};
+  }
+
+  const socket = io(`${API_BASE}/dispatch`, {
+    auth: { token },
+    transports: ["websocket", "polling"],
+  });
+
+  socket.on("dispatch:new-request", (summary) => {
+    if (summary) onNewRequest?.(summary);
+  });
+
+  socket.on("dispatch:claimed", (payload) => {
+    if (payload?.shipmentId) onClaimed?.(payload.shipmentId);
+  });
+
+  socket.on("connect_error", (err) => {
+    // eslint-disable-next-line no-console
+    console.error("Dispatch queue socket failed to connect:", err.message);
+  });
+
+  return () => {
+    socket.disconnect();
+  };
+}
+
 // A rider claims an ASSIGNMENT_PENDING shipment for themselves. Can
 // fail with 409 if another rider won the race — callers should treat
 // that as "someone else got it," not a hard error.
@@ -284,12 +345,18 @@ export function updateLocation({ latitude, longitude, accuracyMeters }) {
 /* Cash collection                                                      */
 /* ------------------------------------------------------------------ */
 
+// GET /payments/by-shipment/:shipmentId — the missing lookup this
+// module's collectCash() needed: the shipment itself never carried a
+// paymentId (GET /shipments/:id still doesn't), so this is how the
+// active-delivery screen finds out whether the current shipment has a
+// CASH payment sitting PENDING_CASH_COLLECTION. Returns null when no
+// payment exists yet for the shipment — a normal state, not an error.
+export function getPaymentForShipment(shipmentId) {
+  return request(`/payments/by-shipment/${shipmentId}`);
+}
+
 // POST /payments/:id/collect-cash — confirms a CASH payment was
-// physically collected. Not wired into any screen yet in this pass:
-// the UI has no way to know a shipment's paymentId (GET /shipments/:id
-// doesn't expose one), and CASH-vs-MPESA/STRIPE isn't surfaced to the
-// rider anywhere in the current screens. Left here, unused, as the
-// documented next step rather than guessed at.
+// physically collected.
 export function collectCash(paymentId) {
   return request(`/payments/${paymentId}/collect-cash`, { method: "POST" });
 }

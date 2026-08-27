@@ -1205,11 +1205,12 @@ function ProofOfDeliveryScreen({ photoUrl, uploading, onCapturePhoto, recipientN
   );
 }
 
-function CompleteScreen({ shipment, completedToday, customerRating, setCustomerRating, onBackOnline, finishing }) {
+function CompleteScreen({ shipment, completedToday, customerRating, setCustomerRating, onBackOnline, finishing, pendingCashPayment, collectingCash, onCollectCash }) {
   const remaining = Math.max(0, 8 - (completedToday + 1));
   const fare = Math.round(parseFloat(shipment.price || "0"));
   const commission = Math.round(parseFloat(shipment.commission || "0"));
   const payout = Math.round(parseFloat(shipment.riderPayout || "0"));
+  const cashOwed = pendingCashPayment && pendingCashPayment.status === "PENDING_CASH_COLLECTION";
   return (
     <div className="h-full flex flex-col px-6" style={{ backgroundColor: COLORS.paper }}>
       <StatusBar />
@@ -1219,6 +1220,31 @@ function CompleteScreen({ shipment, completedToday, customerRating, setCustomerR
         </div>
         <h2 className="text-2xl font-extrabold" style={{ color: COLORS.ink }}>Delivery complete!</h2>
       </div>
+
+      {pendingCashPayment && (
+        <div className="rounded-2xl px-4 py-4 mb-4" style={{ backgroundColor: cashOwed ? COLORS.amberSoft : COLORS.paperDim }}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              {cashOwed ? "Cash to collect" : "Cash collected"}
+            </span>
+            <span className="text-base font-extrabold" style={{ color: COLORS.amberDeep }}>
+              {fmtTZS(Math.round(parseFloat(pendingCashPayment.amount || "0")))}
+            </span>
+          </div>
+          {cashOwed ? (
+            <button
+              onClick={onCollectCash}
+              disabled={collectingCash}
+              className="w-full mt-2 rounded-xl py-2.5 text-sm font-bold"
+              style={{ backgroundColor: COLORS.amberDeep, color: COLORS.paper }}
+            >
+              {collectingCash ? "Confirming…" : "Mark cash collected"}
+            </button>
+          ) : (
+            <p className="text-xs" style={{ color: COLORS.inkFaint }}>Confirmed.</p>
+          )}
+        </div>
+      )}
 
       <div className="rounded-2xl px-4 py-4 mb-4" style={{ backgroundColor: COLORS.paperDim }}>
         <div className="flex items-center justify-between mb-2">
@@ -1331,6 +1357,14 @@ function App() {
   const [podSubmitting, setPodSubmitting] = useState(false);
   const [customerRating, setCustomerRating] = useState(0);
   const [finishing, setFinishing] = useState(false);
+
+  // Cash-collection: whether this shipment has a CASH payment still
+  // PENDING_CASH_COLLECTION, and the in-flight state of confirming it.
+  // null = not checked yet or genuinely no payment on this shipment —
+  // treated the same way (never blocks finishing the job) since a
+  // failed lookup shouldn't trap a rider who can't reach the backend.
+  const [pendingCashPayment, setPendingCashPayment] = useState(null);
+  const [collectingCash, setCollectingCash] = useState(false);
 
   const refreshEarnings = async () => {
     setEarningsLoading(true);
@@ -1450,10 +1484,12 @@ function App() {
   };
 
   // While online, idle, and on the Home tab: poll the open delivery
-  // queue (GET /shipments/available) for the next unassigned job. This
-  // is the rider-facing counterpart to the admin/dispatcher queue —
-  // there's no push/WebSocket layer yet, so polling is the honest
-  // MVP-stage approach rather than faking a live feed.
+  // queue (GET /shipments/available) for the next unassigned job. Kept
+  // as a fallback alongside the socket subscription below — this fires
+  // on first mount / after a reconnect gap and on any network that
+  // blocks WebSocket upgrades; the socket below is what makes a new
+  // request usually show up within milliseconds instead of waiting up
+  // to ~4s for the next poll tick.
   useEffect(() => {
     if (!(online && screen === "home" && !currentShipment)) return;
     let cancelled = false;
@@ -1472,6 +1508,36 @@ function App() {
     };
     let timer = setTimeout(poll, 2000);
     return () => { cancelled = true; clearTimeout(timer); };
+  }, [online, screen, currentShipment]);
+
+  // Push side of the same queue (see api.js#subscribeToDispatchQueue and
+  // the backend's dispatch.gateway.ts) — same online/idle/Home-tab gate
+  // as the poll above, so the socket is only open while it could
+  // actually matter. `dispatch:new-request` shows the request screen
+  // immediately, same as a poll hit would; `dispatch:claimed` clears it
+  // if it matches whatever's currently showing (someone else — another
+  // rider, or a dispatcher — got there first), so the rider isn't left
+  // staring at a request that's already gone and about to 409 on Accept.
+  const availableShipmentIdRef = useRef(null);
+  useEffect(() => {
+    availableShipmentIdRef.current = availableShipment?.id ?? null;
+  }, [availableShipment]);
+
+  useEffect(() => {
+    if (!(online && screen === "home" && !currentShipment)) return;
+    const unsubscribe = api.subscribeToDispatchQueue({
+      onNewRequest: (summary) => {
+        if (availableShipmentIdRef.current) return; // already showing one
+        setAvailableShipment(summary);
+        setScreen("request");
+      },
+      onClaimed: (shipmentId) => {
+        if (availableShipmentIdRef.current !== shipmentId) return;
+        setAvailableShipment(null);
+        setScreen("home");
+      },
+    });
+    return unsubscribe;
   }, [online, screen, currentShipment]);
 
   // Send a GPS ping every 20s while online and a fix is available — the
@@ -1523,6 +1589,7 @@ function App() {
     setPodPhotoUrl(null);
     setRecipientName("");
     setCustomerRating(0);
+    setPendingCashPayment(null);
     setCurrentShipment(null);
   };
 
@@ -1593,6 +1660,44 @@ function App() {
     }
   };
 
+  // Checks whether this shipment has cash still owed, once delivery is
+  // confirmed and the complete screen is up. Failures are swallowed —
+  // pendingCashPayment just stays null, which never blocks "Back
+  // online" (see its comment above), so a rider isn't stuck because of
+  // a network hiccup on a screen they've already finished the delivery
+  // work on.
+  useEffect(() => {
+    if (screen !== "complete" || !currentShipment) return;
+    let cancelled = false;
+    api
+      .getPaymentForShipment(currentShipment.id)
+      .then((payment) => {
+        if (cancelled) return;
+        if (payment && payment.method === "CASH" && payment.status === "PENDING_CASH_COLLECTION") {
+          setPendingCashPayment(payment);
+        }
+      })
+      .catch((e) => console.error("Payment lookup failed", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [screen, currentShipment]);
+
+  const handleCollectCash = async () => {
+    if (!pendingCashPayment) return;
+    setCollectingCash(true);
+    setError(null);
+    try {
+      const updated = await api.collectCash(pendingCashPayment.id);
+      setPendingCashPayment(updated);
+    } catch (e) {
+      console.error("Cash collection failed", e);
+      setError("Couldn't confirm cash collection. Try again.");
+    } finally {
+      setCollectingCash(false);
+    }
+  };
+
   const finishJobAndGoOnline = async () => {
     setFinishing(true);
     try {
@@ -1658,7 +1763,7 @@ function App() {
       />
     );
   } else if (screen === "complete" && currentShipment) {
-    content = <CompleteScreen shipment={currentShipment} completedToday={completedToday} customerRating={customerRating} setCustomerRating={setCustomerRating} onBackOnline={finishJobAndGoOnline} finishing={finishing} />;
+    content = <CompleteScreen shipment={currentShipment} completedToday={completedToday} customerRating={customerRating} setCustomerRating={setCustomerRating} onBackOnline={finishJobAndGoOnline} finishing={finishing} pendingCashPayment={pendingCashPayment} collectingCash={collectingCash} onCollectCash={handleCollectCash} />;
   } else {
     // Any state relying on availableShipment/currentShipment that isn't
     // set yet (e.g. a hard refresh mid-job) falls back to Home rather

@@ -61,6 +61,20 @@ export class PaymentsController {
     return this.paymentsService.reconcile(date);
   }
 
+  // GET /payments/by-shipment/:shipmentId — owning customer, the
+  // assigned rider, or an admin. Same 'static segment before :id'
+  // ordering reason as reconcile/:date above — 'by-shipment' would
+  // otherwise be swallowed as a payment id by ':id/status'.
+  @Get('by-shipment/:shipmentId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth('access-token')
+  findForShipment(
+    @Param('shipmentId', ParseUUIDPipe) shipmentId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.paymentsService.findForShipment(shipmentId, user);
+  }
+
   // GET /payments/:id/status — owning customer or admin only.
   @Get(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)

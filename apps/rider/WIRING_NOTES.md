@@ -65,6 +65,16 @@ The backend must already be running (`npm run dev` in
   simulated to real. If the rider is offline or has no GPS fix yet, no
   pings are sent — the customer app's simulated-fallback path is what
   covers that gap on the other side, not anything this app fakes.
+- **Cash collection** — `GET /payments/by-shipment/:id` looks up the
+  shipment's payment (new endpoint, added alongside this pass — the
+  shipment itself never carried a paymentId, which was the actual
+  blocker before), and `POST /payments/:id/collect-cash` confirms it.
+  Surfaced on the post-delivery "Complete" screen: if the shipment's
+  payment is CASH and still `PENDING_CASH_COLLECTION`, a "Mark cash
+  collected" card appears with the amount due. Deliberately
+  non-blocking — a rider can still tap "Back online" without
+  confirming, so a failed lookup or a rider who forgets doesn't get
+  trapped on the screen; it's a prompt, not a gate.
 - **Earnings / wallet** — `GET /riders/me/earnings`, one real row per
   delivered/completed shipment payout (added alongside this app; the
   backend had no rider-facing earnings read before).
@@ -89,13 +99,6 @@ demo action.
 
 ## Known gaps worth flagging
 
-- **`collectCash(paymentId)` exists in `api.js` but isn't called from any
-  screen.** `POST /payments/:id/collect-cash` (confirming a CASH payment
-  was physically collected) is implemented API-client-side, but nothing
-  in the current UI surfaces a shipment's `paymentId` or whether it's
-  CASH vs M-Pesa/Stripe — `GET /shipments/:id` doesn't return one. Left
-  in place as the documented next step rather than guessed at or wired to
-  the wrong field.
 - **No live push for the available-deliveries queue or delivery
   progress** — both are polls (4s and — for delivery detail — a separate
   poll elsewhere in the app), not pushes, same tradeoff the other three
