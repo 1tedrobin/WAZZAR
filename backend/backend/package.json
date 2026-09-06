@@ -1,7 +1,7 @@
 {
   "name": "@wazzar/backend",
   "version": "0.1.0",
-  "description": "WAZZAR backend skeleton \u2014 API server + DB connection, no business features yet",
+  "description": "WAZZAR backend skeleton — API server + DB connection, no business features yet",
   "scripts": {
     "build": "nest build",
     "start": "nest start",
@@ -81,5 +81,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "allowScripts": {
+    "bcrypt@5.1.1": true
   }
 }
