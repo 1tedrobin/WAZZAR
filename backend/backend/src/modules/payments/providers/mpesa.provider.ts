@@ -2,6 +2,56 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { ProviderInitiateResult, ProviderRefundResult } from './provider-result.types';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../../common/currency';
+
+// ⛔ DEPRECATED (2026-09-03) — no longer wired into PaymentsService's
+// routing. See docs/delivery-notes/TANZANIA_MPESA_FIX.md for the full
+// story. This class is Safaricom Daraja code that was mislabeled as
+// Tanzania's M-Pesa integration; TZS payments are now routed to
+// MpesaTanzaniaProvider (mpesa-tanzania.provider.ts), a real attempt at
+// Vodacom Tanzania's actual Open API. This class is left in place,
+// untouched beyond this notice, rather than deleted, because:
+//   (a) it's functionally identical to MpesaKenyaProvider (same
+//       Safaricom Daraja API this class was always actually calling)
+//       and deleting it outright — vs. just leaving it unreferenced —
+//       felt like a bigger, separate cleanup decision than this fix
+//       should make unilaterally;
+//   (b) its webhook plumbing (MpesaWebhookDto, parseMpesaCallback,
+//       handleMpesaCallback in payments.service.ts) is still live and
+//       still correct — it's genuine Safaricom Daraja callback-shape
+//       handling, just now understood to serve Kenya
+//       (MpesaKenyaProvider) rather than Tanzania. Nothing there needed
+//       to change.
+// If this class is still unreferenced by the time someone reads this,
+// that's expected — check MpesaKenyaProvider and
+// PaymentsService.resolveMobileMoneyProvider() for where its old role
+// actually lives now.
+//
+// This provider talks to the MPESA_SHORTCODE configured in .env, which is
+// registered against one specific market's Daraja app (Tanzania, given
+// the 255-prefix phone validation in InitiatePaymentDto). It is NOT a
+// generic "M-Pesa anywhere" integration — Safaricom Kenya M-Pesa and
+// Vodacom Tanzania M-Pesa are separate Daraja registrations with
+// different shortcodes/credentials, and this class only ever holds one
+// set. Accepting a KES/UGX/RWF payment here would silently route it
+// through the wrong country's M-Pesa network. A real M-Pesa-Kenya (or
+// other regional mobile-money) provider is new-provider work, not part
+// of this multi-currency core pass — see MASTER_GAPS_AND_ROADMAP.md
+// Phase 4 "New regional payment providers".
+//
+// ⚠ KNOWN ISSUE, discovered 2026-09-02 while building
+// providers/mpesa-kenya.provider.ts (see that file's class-level comment
+// for the full writeup, and
+// docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md): this class's
+// daraJaBaseUrl() below points at sandbox.safaricom.co.ke /
+// api.safaricom.co.ke — Safaricom's own domain. That's correct for
+// Kenya, but this class is documented (and named via env vars) as the
+// TANZANIA integration. Safaricom does not operate M-Pesa in Tanzania —
+// Vodacom Tanzania does, via a separate API this class was never built
+// against. This predates the Phase 4 work and was not introduced or
+// fixed here; a real Vodacom Tanzania Open API integration is separate,
+// not-yet-started work.
+const MPESA_SUPPORTED_CURRENCIES: SupportedCurrency[] = [DEFAULT_CURRENCY];
 
 // True only when every credential Daraja STK Push actually needs is
 // configured. Deliberately all-or-nothing — a partially-configured set
@@ -57,12 +107,15 @@ export class MpesaProvider {
     phone: string,
     amount: string,
     reference: string,
+    currency: SupportedCurrency = DEFAULT_CURRENCY,
   ): Promise<ProviderInitiateResult> {
+    this.assertSupportedCurrency(currency);
+
     if (!hasRealMpesaCredentials(this.configService)) {
       void phone;
       void amount;
       void reference;
-      return { transactionId: `MPESA-${randomUUID()}` };
+      return { transactionId: `MPESA-${randomUUID()}`, isMock: true };
     }
 
     const baseUrl = daraJaBaseUrl(this.configService);
@@ -107,10 +160,16 @@ export class MpesaProvider {
     // it back out of the real Daraja callback shape, and
     // handleMpesaCallback in payments.service.ts, which looks up the
     // Payment by it.
-    return { transactionId: body.CheckoutRequestID };
+    return { transactionId: body.CheckoutRequestID, isMock: false };
   }
 
-  async refund(externalId: string, amount: string): Promise<ProviderRefundResult> {
+  async refund(
+    externalId: string,
+    amount: string,
+    currency: SupportedCurrency = DEFAULT_CURRENCY,
+  ): Promise<ProviderRefundResult> {
+    this.assertSupportedCurrency(currency);
+
     if (!hasRealMpesaCredentials(this.configService)) {
       void externalId;
       void amount;
@@ -137,6 +196,15 @@ export class MpesaProvider {
       'M-Pesa refunds are not automated — process this manually via Safaricom ' +
         'Daraja B2C Reversal (see PAYMENTS_GOING_LIVE.md) and record the outcome by hand.',
     );
+  }
+
+  private assertSupportedCurrency(currency: SupportedCurrency): void {
+    if (!MPESA_SUPPORTED_CURRENCIES.includes(currency)) {
+      throw new Error(
+        `This M-Pesa integration is configured for ${MPESA_SUPPORTED_CURRENCIES.join(', ')} ` +
+          `only — ${currency} needs its own provider/credentials, not this one.`,
+      );
+    }
   }
 
   private async getAccessToken(baseUrl: string): Promise<string> {

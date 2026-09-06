@@ -4,7 +4,55 @@
 
 Everything below the dated update log is the full history of what
 changed and why. This section is the short version: what's genuinely
-still missing, as of 2026-08-22, in one place.
+still missing, as of 2026-09-03, in one place.
+
+**Phase 2 (Intercity/Trunk Network) foundation built, 2026-09-03.**
+Hubs, partner operators, carriers, the leg model that drives intercity
+shipments, tracking-channel ingestion, and a mock-by-default LATRA
+adapter — see `docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md` for
+the full picture. **This pass's own check suite actually ran** (first
+time in this project with real npm registry access in the sandbox): for
+the backend, `npm install`, `tsc --noEmit`, `eslint`, the full `jest`
+suite (270/270, 25/25 suites), and `nest build`; for `apps/admin`
+(below), `npm install`, `vite build`, and `vitest run` (3/3). Still
+never run against a real Postgres database or a live HTTP server. Also
+fixed in passing (unrelated to Phase 2, found only because `tsc` was
+finally run for real): `payments.service.ts` referenced a `Payment.isMock`
+field that didn't exist anywhere in the codebase — dead code, removed.
+
+**No separate dispatcher app — folded into `apps/admin` instead, same
+day.** Asked directly whether it could live inside the admin console
+rather than as a 5th app; the codebase already assumed as much
+(`api.roleSummary()` already distinguished `isAdmin`/`isDispatcher`
+before Phase 2 existed). `apps/admin`'s Dispatch page now has an
+"Intercity (Phase 2)" section (pending/active legs, assign a rider or
+carrier, start/complete/cancel), plus three new full-CRUD pages — Hubs,
+Carriers, Partner Operators. The sidebar now filters by role: a
+DISPATCHER-only login sees just Dispatch. One new backend endpoint came
+out of this pass too — `GET /legs/active` — since advancing an
+already-assigned leg needed a way to list it that `GET /legs/pending`
+doesn't cover. Full detail, including what's still not wired (no
+customer-facing intercity booking, no real LATRA credentials), in
+`docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md`'s "Update,
+2026-09-03" section.
+
+**Rider/carrier leg self-service, and customer intercity booking,
+2026-09-05.** `POST /legs/:id/self-claim`/`self-start`/`self-complete`
+(rider JWT) and `.../carrier-start`/`.../carrier-complete` (partner API
+key) — mirroring `ShipmentsService.assign`/`submitProofOfDelivery`'s
+race-safe pattern; two gaps remain, flagged in `LegsService` (no
+geographic scoping on self-claim, no proof-of-delivery capture on final
+leg completion). `apps/customer` now has a "Sending between cities"
+toggle that opens a hub-picker before the price estimate and calls
+`POST /shipments/intercity` on confirm. Along the way: `GET /hubs` only
+allowed ADMIN/SUPER_ADMIN/DISPATCHER — a customer couldn't have listed
+hubs to book with at all — now also open to CUSTOMER/BUSINESS (reads
+only; writes unchanged). Real LATRA credentials remain the one item
+that isn't a coding task — see
+`docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md`'s closing section
+for why. Full detail on all of the above in that same document's
+"Update, 2026-09-03" and "Update, 2026-09-05" sections.
+
 
 **Business app — all 4 originally-mock screens are now wired.**
 Customers and Staff were the first two (earlier passes); Scheduled
@@ -50,6 +98,28 @@ suite.
   isn't confirmed.
 - M-Pesa refunds are permanently manual by design (not a gap — Daraja
   genuinely has no simple refund API), documented in the same file.
+- ⚠ **2026-09-02:** while building the new Kenya M-Pesa provider (Phase
+  4 — see `docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md`),
+  discovered that the existing M-Pesa integration described in this
+  section — including the webhook shape fix below, built from
+  Safaricom's own Daraja docs — is actually built against **Safaricom's
+  Kenya API**, not a Tanzania one. Safaricom doesn't operate M-Pesa in
+  Tanzania; Vodacom Tanzania does, via a different API this codebase has
+  never integrated with. "Real credentials" for this provider, once
+  obtained from Safaricom, would work for **Kenya**, not Tanzania. See
+  the linked note for the full explanation before treating this as a
+  simple credentials-acquisition task for the Dar es Salaam launch.
+- **Addressed 2026-09-03:** `MpesaTanzaniaProvider` now exists — a real
+  (but not sandbox-verified) attempt at Vodacom Tanzania's actual Open
+  API, replacing the mislabeled Safaricom-based class for TZS traffic.
+  See `docs/delivery-notes/TANZANIA_MPESA_FIX.md` for exactly how
+  confident to be in it (meaningfully less than every other provider in
+  this codebase — built from community reverse-engineering, not
+  official docs) and what real sandbox testing needs to confirm before
+  this goes anywhere near production, including a genuinely open
+  question about whether Vodacom's payment flow is synchronous or async
+  (this implementation deliberately assumed the safer, more
+  conservative answer rather than guessing).
 
 **Infrastructure:**
 - **Update, 2026-08-23:** the backend's full check suite now actually
@@ -613,11 +683,54 @@ Listed so they don't get mistaken for missing MVP work — these are
 intentionally deferred per WAZZAR's own phase model, not oversights:
 
 - Intercity/multi-leg shipments, carrier partners (PAX etc.), LATRA
-  adapter — Phase 2
+  adapter — **Phase 2 foundation now built** (2026-09-03) — hubs,
+  partner operators, carriers, the leg model, tracking-channel ingestion,
+  and a mock-by-default LATRA adapter all exist and pass the full check
+  suite (`tsc`/`eslint`/`jest`/`nest build`, all real, not
+  syntax-checked). Dispatcher-facing UI and Hubs/Carriers/Partner
+  Operators management are wired into `apps/admin` (no separate
+  dispatcher app — see that same day's update). No customer-facing
+  intercity booking flow yet, and no real LATRA credentials — see
+  `docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md` for the complete
+  picture, including what's deliberately simplified.
 - Business bulk-send, CSV upload, and invoicing beyond what's already
   built (`business-customers`, `business-staff`, `scheduled-deliveries`
   are real Phase 1 features today, not deferred — see `apps/business`
   and this doc's own entries above) — remaining scope not evaluated in
-  this pass, Phase 3
-- Multi-country config, currency, regulations — Phase 4
+this pass, Phase 3. **Update (2026-09-03):** all four Phase 3 items
+  — API subscriptions, advanced invoicing, the business analytics
+  dashboard, and CSV bulk send — are now real, wired, tested features,
+  not deferred. See `docs/delivery-notes/API_SUBSCRIPTIONS.md`,
+  `docs/delivery-notes/ADVANCED_INVOICING.md`,
+  `docs/delivery-notes/ANALYTICS_DASHBOARD.md`, and
+  `docs/delivery-notes/CSV_BULK_SEND.md`. Phase 3 is complete as
+  originally scoped; see each note's "Known limitations" section for
+  what's intentionally still out of scope (e.g. CSV bulk send's
+  100-row cap, no per-key rate limiting on the public API, no draft
+  invoice workflow). A full-system audit followed
+  (`docs/delivery-notes/FULL_SYSTEM_AUDIT_2026-09-03.md`) covering
+  every module built across all four features plus a whole-repo lint/
+  build/test pass — it found and fixed five real issues, two of them
+  pre-existing and unrelated to Phase 3 itself: a project-wide
+  TypeScript compile error (`Payment.isMock` referenced but never
+  declared, blocking `payments.service.spec.ts` from running cleanly)
+  and a missing `socket.io-client` dependency that made the rider app
+  fail to build entirely. As of that audit, the whole monorepo — the
+  backend and all four frontend apps — type-checks, lints, builds, and
+  tests cleanly with zero known errors.
+- Multi-country config, currency, regulations — Phase 4. **All three
+  Phase 4 sub-pieces now have work underway (2026-09-02)**: currency
+  infrastructure, locale/market config, and new regional payment
+  providers (Kenya M-Pesa + MTN Mobile Money for Uganda/Rwanda) — see
+  `docs/delivery-notes/PHASE4_MULTI_CURRENCY_CORE.md`,
+  `docs/delivery-notes/PHASE4_LOCALE_MARKET_CONFIG.md`, and
+  `docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md`. **None of
+  this has been run against a real build/test/database yet** — see each
+  note's "Verification status" section. Regulatory/compliance
+  requirements per country and Airtel Money remain fully unstarted.
+  The regional-payment-providers note also surfaced a real,
+  **pre-existing** bug in the current M-Pesa integration (documented as
+  Tanzania's, actually pointed at Kenya's Safaricom API) — worth reading
+  before treating the "real payment provider credentials" blocker below
+  as just a credentials-acquisition task.
 - Dynamic pricing, route optimization, analytics, insurance — Phase 4

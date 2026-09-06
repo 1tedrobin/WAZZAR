@@ -8,6 +8,7 @@ import {
   MapPin, Search, ChevronLeft, ChevronRight, Star, Phone, MessageCircle, Camera, Check, CheckCircle2, Circle, Zap, Wallet, CreditCard, Banknote, Bike, Radar, Signal, Wifi, BatteryFull, FileText, Package, UtensilsCrossed, Pill, Smartphone, Shirt, Home, History, User, Sparkles, LocateFixed, Receipt, Activity,
 } from "lucide-react";
 import * as api from "./api";
+import WazzarHero from "./visual/threeui/WazzarHero";
 
 const COLORS = {
   ink: "#10221C",
@@ -534,9 +535,10 @@ function LiveMap({ center, zoom = 14.6, interactive, pins, routeCoords, riderPos
 
 function SplashScreen({ onNext }) {
   return (
-    <div className="h-full flex flex-col items-center justify-between px-8 pb-10" style={{ backgroundColor: COLORS.ink }}>
-      <div className="w-full"><StatusBar light /></div>
-      <div className="flex flex-col items-center text-center">
+    <div className="h-full flex flex-col items-center justify-between px-8 pb-10 relative" style={{ backgroundColor: COLORS.ink }}>
+      <WazzarHero />
+      <div className="w-full" style={{ position: "relative", zIndex: 1 }}><StatusBar light /></div>
+      <div className="flex flex-col items-center text-center" style={{ position: "relative", zIndex: 1 }}>
         <div className="rounded-3xl flex items-center justify-center mb-6" style={{ width: 84, height: 84, backgroundColor: COLORS.amber }}>
           <span className="text-3xl font-extrabold" style={{ color: COLORS.ink }}>W</span>
         </div>
@@ -544,7 +546,7 @@ function SplashScreen({ onNext }) {
         <p className="mt-3 text-sm font-semibold" style={{ color: COLORS.paper, opacity: 0.7 }}>Nitumie kupitia WAZZAR</p>
         <p className="text-xs mt-1" style={{ color: COLORS.paper, opacity: 0.45 }}>Send anything, anywhere in Dar es Salaam.</p>
       </div>
-      <div className="w-full"><PrimaryButton onClick={onNext}>Get started</PrimaryButton></div>
+      <div className="w-full" style={{ position: "relative", zIndex: 1 }}><PrimaryButton onClick={onNext}>Get started</PrimaryButton></div>
     </div>
   );
 }
@@ -849,7 +851,7 @@ function LocationScreen({ type, value, setValue, onNext, onBack, step, total, co
   );
 }
 
-function PackageScreen({ step, total, onBack, onNext, category, setCategory, size, setSize, fragile, setFragile, recipient, setRecipient, recipientPhone, setRecipientPhone, cod, setCod }) {
+function PackageScreen({ step, total, onBack, onNext, category, setCategory, size, setSize, fragile, setFragile, recipient, setRecipient, recipientPhone, setRecipientPhone, cod, setCod, isIntercity, setIsIntercity }) {
   return (
     <div className="h-full flex flex-col" style={{ backgroundColor: COLORS.paper }}>
       <StatusBar />
@@ -880,6 +882,14 @@ function PackageScreen({ step, total, onBack, onNext, category, setCategory, siz
           })}
         </div>
 
+        <div className="flex items-center justify-between rounded-2xl px-4 py-3 mb-3" style={{ backgroundColor: COLORS.paperDim }}>
+          <div>
+            <p className="text-sm font-bold" style={{ color: COLORS.ink }}>Sending between cities</p>
+            <p className="text-xs" style={{ color: COLORS.inkFaint }}>Goes via a WAZZAR hub, not straight to the recipient</p>
+          </div>
+          <ToggleSwitch checked={isIntercity} onChange={setIsIntercity} />
+        </div>
+
         <div className="flex items-center justify-between rounded-2xl px-4 py-3 mb-5" style={{ backgroundColor: COLORS.paperDim }}>
           <div>
             <p className="text-sm font-bold" style={{ color: COLORS.ink }}>Fragile item</p>
@@ -908,7 +918,60 @@ function PackageScreen({ step, total, onBack, onNext, category, setCategory, siz
           <ToggleSwitch checked={cod} onChange={setCod} />
         </div>
       </div>
-      <div className="px-5 pb-4 pt-2"><PrimaryButton onClick={onNext} disabled={!recipient || !recipientPhone}>Get price</PrimaryButton></div>
+      <div className="px-5 pb-4 pt-2"><PrimaryButton onClick={onNext} disabled={!recipient || !recipientPhone}>{isIntercity ? "Choose hubs" : "Get price"}</PrimaryButton></div>
+    </div>
+  );
+}
+
+// Phase 2 — the between-cities counterpart to the (implicit) same-city
+// flow. Rather than trying to auto-match a geocoded address to a hub's
+// city (LocationDto has no structured city field, just free text + lat/
+// lng), this just lets the customer pick both hubs directly from the
+// full list — simple and honest about what the data actually supports,
+// at the cost of not pre-filtering the lists to "hubs near you".
+function IntercityHubsScreen({ step, total, onBack, onNext, hubs, hubsLoading, hubsError, originHubId, setOriginHubId, destinationHubId, setDestinationHubId }) {
+  const HubList = ({ selectedId, onSelect }) => (
+    <div className="flex flex-col gap-2">
+      {hubs.map((h) => {
+        const active = selectedId === h.id;
+        return (
+          <button key={h.id} onClick={() => onSelect(h.id)} className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: active ? COLORS.ink : COLORS.paperDim }}>
+            <span className="text-sm font-bold" style={{ color: active ? COLORS.paper : COLORS.ink }}>{h.name}</span>
+            <span className="text-xs font-semibold" style={{ color: active ? COLORS.amber : COLORS.inkFaint }}>{h.city}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div className="h-full flex flex-col" style={{ backgroundColor: COLORS.paper }}>
+      <StatusBar />
+      <FlowHeader title="Choose hubs" step={step} total={total} onBack={onBack} />
+      <div className="flex-1 overflow-y-auto px-5 pb-3">
+        <p className="text-xs font-semibold mb-4" style={{ color: COLORS.inkFaint }}>
+          Between-city deliveries move through a WAZZAR hub near your pickup and one near your drop-off.
+        </p>
+        {hubsLoading && <p className="text-sm" style={{ color: COLORS.inkFaint }}>Loading hubs…</p>}
+        {hubsError && <p className="text-sm font-semibold" style={{ color: "#C0392B" }}>{hubsError}</p>}
+        {!hubsLoading && !hubsError && hubs.length === 0 && (
+          <p className="text-sm" style={{ color: COLORS.inkFaint }}>No hubs are set up yet — between-city delivery isn't available right now.</p>
+        )}
+        {!hubsLoading && !hubsError && hubs.length > 0 && (
+          <>
+            <p className="text-xs font-bold tracking-wide mb-2" style={{ color: COLORS.inkFaint }}>PICKUP HUB (near you)</p>
+            <div className="mb-5"><HubList selectedId={originHubId} onSelect={setOriginHubId} /></div>
+            <p className="text-xs font-bold tracking-wide mb-2" style={{ color: COLORS.inkFaint }}>DROP-OFF HUB (near recipient)</p>
+            <HubList selectedId={destinationHubId} onSelect={setDestinationHubId} />
+            {originHubId && originHubId === destinationHubId && (
+              <p className="text-xs font-semibold mt-3" style={{ color: "#C0392B" }}>Pickup and drop-off hubs must be different.</p>
+            )}
+          </>
+        )}
+      </div>
+      <div className="px-5 pb-4 pt-2">
+        <PrimaryButton onClick={onNext} disabled={!originHubId || !destinationHubId || originHubId === destinationHubId}>Get price</PrimaryButton>
+      </div>
     </div>
   );
 }
@@ -1211,6 +1274,35 @@ function App() {
   const [express, setExpress] = useState(false);
   const [payment, setPayment] = useState("momo");
 
+  // Phase 2 — between-cities booking. `isIntercity` gates an extra
+  // "hubs" step between package details and the price estimate (see the
+  // step/total wiring below and IntercityHubsScreen).
+  const [isIntercity, setIsIntercity] = useState(false);
+  const [hubs, setHubs] = useState([]);
+  const [hubsLoading, setHubsLoading] = useState(false);
+  const [hubsError, setHubsError] = useState(null);
+  const [originHubId, setOriginHubId] = useState(null);
+  const [destinationHubId, setDestinationHubId] = useState(null);
+  const totalSteps = isIntercity ? 5 : 4;
+
+  // Fetches once per visit to the hubs screen — GET /hubs is small
+  // (every hub, unfiltered; see IntercityHubsScreen's comment on why
+  // this doesn't try to pre-filter to "hubs near you").
+  useEffect(() => {
+    if (screen !== "hubs") return;
+    let cancelled = false;
+    setHubsLoading(true);
+    setHubsError(null);
+    api.listHubs()
+      .then((data) => { if (!cancelled) setHubs(data); })
+      .catch((err) => { if (!cancelled) setHubsError(err.message || "Could not load hubs."); })
+      .finally(() => { if (!cancelled) setHubsLoading(false); });
+    return () => { cancelled = true; };
+  }, [screen]);
+
+  const originHub = hubs.find((h) => h.id === originHubId) || null;
+  const destinationHub = hubs.find((h) => h.id === destinationHubId) || null;
+
   const [trackingStep, setTrackingStep] = useState(1);
   const [liveRiderLocation, setLiveRiderLocation] = useState(null);
   const [rating, setRating] = useState(0);
@@ -1233,12 +1325,28 @@ function App() {
   // model actually prices (base + distance + weight + surge) show up;
   // size/fragile/express aren't priced server-side yet, so they no
   // longer appear as their own line items.
+  //
+  // Intercity: no separate quote endpoint exists server-side (see
+  // LegsService.planIntercityShipment) — it prices the shipment as part
+  // of creating it, using the same PricingService.calculatePrice this
+  // preview calls, against the SAME summed pickup->originHub +
+  // originHub->destinationHub + destinationHub->dropoff distance
+  // computed here client-side. Same formula, same distance source, so
+  // this preview should land at (or very near) the real price — but it
+  // is still a preview, not a guarantee, until the actual POST
+  // /shipments/intercity call returns.
   useEffect(() => {
     if (screen !== "estimate") return;
+    if (isIntercity && (!originHub || !destinationHub)) return;
     let cancelled = false;
     setQuoteLoading(true);
     setQuoteError(null);
-    const distanceKm = route ? route.distanceKm : haversineKm(pickupCoord, dropoffCoord);
+    const hubCoord = (h) => ({ lat: Number(h.latitude), lng: Number(h.longitude) });
+    const distanceKm = isIntercity
+      ? haversineKm(pickupCoord, hubCoord(originHub))
+        + haversineKm(hubCoord(originHub), hubCoord(destinationHub))
+        + haversineKm(hubCoord(destinationHub), dropoffCoord)
+      : (route ? route.distanceKm : haversineKm(pickupCoord, dropoffCoord));
     api
       .calculatePrice({ distanceKm, weightKg: WEIGHT_KG_FOR_SIZE[size] })
       .then((q) => { if (!cancelled) setQuote(q); })
@@ -1246,7 +1354,7 @@ function App() {
       .finally(() => { if (!cancelled) setQuoteLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, size, route, pickupCoord.lat, pickupCoord.lng, dropoffCoord.lat, dropoffCoord.lng]);
+  }, [screen, size, route, pickupCoord.lat, pickupCoord.lng, dropoffCoord.lat, dropoffCoord.lng, isIntercity, originHubId, destinationHubId]);
 
   const price = useMemo(() => {
     if (!quote) return { rows: [], total: 0 };
@@ -1288,16 +1396,35 @@ function App() {
   // has no such shim: it genuinely waits on a rider/admin to confirm
   // collection, so the shipment will stay at QUOTED until that happens
   // elsewhere (there's no rider app wired up in this pass to do that).
+  //
+  // Intercity branches to POST /shipments/intercity instead — see
+  // api.planIntercityShipment. Its response is { shipment, legs }, not
+  // a bare shipment, so only `.shipment` goes into the same `shipment`
+  // state a local order would set; `.legs` isn't used by this app yet.
   const handleConfirmOrder = async () => {
     setOrderError(null);
     setOrderSubmitting(true);
     try {
-      const created = await api.createShipment({
-        pickupLocation: { latitude: pickupCoord.lat, longitude: pickupCoord.lng, address: pickup },
-        dropoffLocation: { latitude: dropoffCoord.lat, longitude: dropoffCoord.lng, address: dropoff },
-        packageWeightKg: WEIGHT_KG_FOR_SIZE[size],
-        packageDescription: `${category} · ${size}${fragile ? " · fragile" : ""} · to ${recipient} (${recipientPhone})`,
-      });
+      const packageDescription = `${category} · ${size}${fragile ? " · fragile" : ""} · to ${recipient} (${recipientPhone})`;
+      let created;
+      if (isIntercity) {
+        const result = await api.planIntercityShipment({
+          pickupLocation: { latitude: pickupCoord.lat, longitude: pickupCoord.lng, address: pickup },
+          dropoffLocation: { latitude: dropoffCoord.lat, longitude: dropoffCoord.lng, address: dropoff },
+          originHubId,
+          destinationHubId,
+          packageWeightKg: WEIGHT_KG_FOR_SIZE[size],
+          packageDescription,
+        });
+        created = result.shipment;
+      } else {
+        created = await api.createShipment({
+          pickupLocation: { latitude: pickupCoord.lat, longitude: pickupCoord.lng, address: pickup },
+          dropoffLocation: { latitude: dropoffCoord.lat, longitude: dropoffCoord.lng, address: dropoff },
+          packageWeightKg: WEIGHT_KG_FOR_SIZE[size],
+          packageDescription,
+        });
+      }
       setShipment(created);
 
       const paymentRecord = await api.initiatePayment({ shipmentId: created.id, uiMethod: payment, phone });
@@ -1403,6 +1530,9 @@ function App() {
     setShipment(null);
     setOrderError(null);
     setQuote(null);
+    setIsIntercity(false);
+    setOriginHubId(null);
+    setDestinationHubId(null);
     if (geo.status === "granted" && geo.coords) {
       setPickupCoord(geo.coords);
       reverseGeocode(geo.coords).then((addr) => setPickup(addr || DEFAULT_PICKUP));
@@ -1444,30 +1574,40 @@ function App() {
   } else if (screen === "pickup") {
     content = (
       <LocationScreen
-        type="pickup" value={pickup} setValue={setPickup} step={1} total={4} onBack={goHome} onNext={() => setScreen("dropoff")}
+        type="pickup" value={pickup} setValue={setPickup} step={1} total={totalSteps} onBack={goHome} onNext={() => setScreen("dropoff")}
         coord={pickupCoord} onCoordChange={setPickupCoord} pickupCoord={pickupCoord} geo={geo}
       />
     );
   } else if (screen === "dropoff") {
     content = (
       <LocationScreen
-        type="dropoff" value={dropoff} setValue={setDropoff} step={2} total={4} onBack={() => setScreen("pickup")} onNext={() => setScreen("package")}
+        type="dropoff" value={dropoff} setValue={setDropoff} step={2} total={totalSteps} onBack={() => setScreen("pickup")} onNext={() => setScreen("package")}
         coord={dropoffCoord} onCoordChange={setDropoffCoord} pickupCoord={pickupCoord} geo={geo}
       />
     );
   } else if (screen === "package") {
     content = (
       <PackageScreen
-        step={3} total={4} onBack={() => setScreen("dropoff")} onNext={() => setScreen("estimate")}
+        step={3} total={totalSteps} onBack={() => setScreen("dropoff")} onNext={() => setScreen(isIntercity ? "hubs" : "estimate")}
         category={category} setCategory={setCategory} size={size} setSize={setSize}
         fragile={fragile} setFragile={setFragile} recipient={recipient} setRecipient={setRecipient}
         recipientPhone={recipientPhone} setRecipientPhone={setRecipientPhone} cod={cod} setCod={setCod}
+        isIntercity={isIntercity} setIsIntercity={setIsIntercity}
+      />
+    );
+  } else if (screen === "hubs") {
+    content = (
+      <IntercityHubsScreen
+        step={4} total={totalSteps} onBack={() => setScreen("package")} onNext={() => setScreen("estimate")}
+        hubs={hubs} hubsLoading={hubsLoading} hubsError={hubsError}
+        originHubId={originHubId} setOriginHubId={setOriginHubId}
+        destinationHubId={destinationHubId} setDestinationHubId={setDestinationHubId}
       />
     );
   } else if (screen === "estimate") {
     content = (
       <EstimateScreen
-        step={4} total={4} onBack={() => setScreen("package")} onNext={handleConfirmOrder}
+        step={totalSteps} total={totalSteps} onBack={() => setScreen(isIntercity ? "hubs" : "package")} onNext={handleConfirmOrder}
         express={express} setExpress={setExpress} payment={payment} setPayment={setPayment} price={price}
         pickupCoord={pickupCoord} dropoffCoord={dropoffCoord} routeCoords={routeCoords} etaMin={route ? route.durationMin : null}
         quoteLoading={quoteLoading} quoteError={quoteError} submitting={orderSubmitting} submitError={orderError}

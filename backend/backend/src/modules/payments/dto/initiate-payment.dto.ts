@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsString, IsUUID, Matches, ValidateIf } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsPhoneNumber, IsString, IsUUID, ValidateIf } from 'class-validator';
 import { PaymentMethod } from '../../../database/entities/payment.entity';
 
 export class InitiatePaymentDto {
@@ -8,13 +8,19 @@ export class InitiatePaymentDto {
   @IsEnum(PaymentMethod)
   method: PaymentMethod;
 
-  // Required for MPESA only. 255XXXXXXXXX — matches the format already
-  // used for User.phone at registration (see RegisterDto).
-  @ValidateIf((dto) => dto.method === PaymentMethod.MPESA)
-  @IsString()
-  @Matches(/^255\d{9}$/, {
-    message: 'phoneNumber must be in 255XXXXXXXXX format',
-  })
+  // Required for MPESA and MOBILE_MONEY. Deliberately just
+  // @IsPhoneNumber(undefined) — any globally-valid phone number — rather
+  // than a fixed-country regex: which specific provider (Tanzania
+  // M-Pesa, Kenya M-Pesa, or MTN MoMo) this actually gets routed to
+  // depends on the shipment's currency, not something this DTO knows in
+  // isolation. PaymentsService.resolveMobileMoneyProvider() does the
+  // real currency-appropriate validation before ever calling a provider
+  // — same pattern as RegisterDto/AuthService's phoneMatchesMarket
+  // check.
+  @ValidateIf(
+    (dto) => dto.method === PaymentMethod.MPESA || dto.method === PaymentMethod.MOBILE_MONEY,
+  )
+  @IsPhoneNumber(undefined, { message: 'phoneNumber must be a valid phone number, e.g. +255712345678' })
   phoneNumber?: string;
 
   // Required for STRIPE only — a client-side token/payment method id

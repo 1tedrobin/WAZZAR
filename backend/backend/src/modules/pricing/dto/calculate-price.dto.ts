@@ -1,6 +1,18 @@
-import { IsISO8601, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsISO8601, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { SupportedCurrency } from '../../../common/currency';
 
 export class CalculatePriceDto {
+  // Which market's PricingConfig to quote against. Deliberately no
+  // `= DEFAULT_CURRENCY` initializer here — omitted must stay
+  // `undefined` after transform so callers can distinguish "no
+  // preference" from "explicitly TZS" (ShipmentsService uses that to
+  // fall back to the customer's registered market instead of a hard
+  // TZS default). PricingService.calculatePrice applies the actual
+  // TZS fallback via `dto.currency ?? DEFAULT_CURRENCY`.
+  @IsEnum(SupportedCurrency)
+  @IsOptional()
+  currency?: SupportedCurrency;
+
   @IsNumber()
   @Min(0)
   distanceKm: number;

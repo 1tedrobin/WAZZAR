@@ -41,6 +41,12 @@ vi.mock('../api', async () => {
     // The dispatch dashboard (this app's default/first page) loads this
     // on mount — an empty queue is enough to reach the real page content.
     getDispatchQueue: vi.fn(async () => ({ pendingShipments: [], onlineRiders: [] })),
+    // Phase 2 — DispatchPage's Intercity section also loads these two on
+    // mount. Mocked for the same reason as getDispatchQueue above: keep
+    // this test hermetic (no real fetch() to a backend that isn't
+    // running here) rather than letting them fail silently in the background.
+    getPendingLegs: vi.fn(async () => ({ pendingLocalLegs: [], pendingTrunkLegs: [] })),
+    getActiveLegs: vi.fn(async () => ({ activeLocalLegs: [], activeTrunkLegs: [] })),
   };
 });
 
@@ -82,5 +88,49 @@ describe('Admin app — login critical path', () => {
     await waitFor(() => expect(screen.getByText('Pending shipments')).toBeInTheDocument());
     expect(screen.getByText('Nothing waiting on dispatch.')).toBeInTheDocument();
     expect(screen.getByText('No riders currently online.')).toBeInTheDocument();
+
+    // Phase 2 — the Intercity section (folded into this same Dispatch
+    // page rather than a separate app; see
+    // docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md) also reaches
+    // its real empty-state copy.
+    await waitFor(() => expect(screen.getByText('Intercity (Phase 2)')).toBeInTheDocument());
+    expect(screen.getByText('No local legs waiting on a rider.')).toBeInTheDocument();
+    expect(screen.getByText('No trunk legs waiting on a carrier.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing currently assigned or in progress.')).toBeInTheDocument();
+  });
+
+  it('shows only Dispatch in the sidebar for a DISPATCHER-only account (no ADMIN/SUPER_ADMIN role)', async () => {
+    const api = await import('../api');
+    api.login.mockImplementationOnce(async (phone) => {
+      const result = {
+        accessToken: 'test-token',
+        refreshToken: 'test-refresh',
+        user: { id: 'dispatcher-1', fullName: 'Test Dispatcher', phone, roles: ['DISPATCHER'] },
+      };
+      localStorage.setItem(TOKEN_KEY, result.accessToken);
+      localStorage.setItem(REFRESH_KEY, result.refreshToken);
+      localStorage.setItem(USER_KEY, JSON.stringify(result.user));
+      return result;
+    });
+
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('+255712345678'), {
+      target: { value: '+255700000002' },
+    });
+    fireEvent.change(document.querySelector('input[type="password"]'), {
+      target: { value: 'correct-horse-battery-staple' },
+    });
+    fireEvent.click(screen.getByText('Sign in'));
+
+    await waitFor(() => expect(screen.getByText('Pending shipments')).toBeInTheDocument());
+
+    // "Dispatch" appears twice — the TopBar title and the sidebar nav
+    // item — everything else in NAV should be gone from the sidebar.
+    expect(screen.getAllByText('Dispatch').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Hubs')).not.toBeInTheDocument();
+    expect(screen.queryByText('Carriers')).not.toBeInTheDocument();
+    expect(screen.queryByText('Partner Operators')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deliveries')).not.toBeInTheDocument();
+    expect(screen.queryByText('Finance')).not.toBeInTheDocument();
   });
 });

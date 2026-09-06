@@ -5,7 +5,9 @@ import { Shipment } from '../../database/entities/shipment.entity';
 import { ShipmentsModule } from '../shipments/shipments.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
-import { MpesaProvider } from './providers/mpesa.provider';
+import { MpesaTanzaniaProvider } from './providers/mpesa-tanzania.provider';
+import { MpesaKenyaProvider } from './providers/mpesa-kenya.provider';
+import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { StripeProvider } from './providers/stripe.provider';
 
 @Module({
@@ -18,6 +20,24 @@ import { StripeProvider } from './providers/stripe.provider';
   // instead of writing shipment.status directly from here.
   imports: [TypeOrmModule.forFeature([Payment, Shipment]), ShipmentsModule],
   controllers: [PaymentsController],
-  providers: [PaymentsService, MpesaProvider, StripeProvider],
+  // MpesaTanzaniaProvider (TZS), MpesaKenyaProvider (KES), and
+  // MtnMomoProvider (UGX/RWF) are all registered even though
+  // PaymentsService only picks one per request — see
+  // resolveMobileMoneyProvider() there. See
+  // docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md and
+  // docs/delivery-notes/TANZANIA_MPESA_FIX.md for why these are
+  // separate provider classes with separate credential sets rather than
+  // one currency-parameterized class.
+  //
+  // MpesaProvider (the deprecated, mislabeled-as-Tanzania Safaricom
+  // provider) is deliberately NOT registered here anymore — nothing in
+  // PaymentsService references it. See its class-level comment.
+  providers: [
+    PaymentsService,
+    MpesaTanzaniaProvider,
+    MpesaKenyaProvider,
+    MtnMomoProvider,
+    StripeProvider,
+  ],
 })
 export class PaymentsModule {}

@@ -11,9 +11,12 @@ import {
 import { PaymentsService } from './payments.service';
 import { Payment, PaymentMethod, PaymentStatus } from '../../database/entities/payment.entity';
 import { Shipment } from '../../database/entities/shipment.entity';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 import { Role } from '../../database/entities/user-role.entity';
 import { JwtPayload } from '../auth/jwt-payload.interface';
-import { MpesaProvider } from './providers/mpesa.provider';
+import { MpesaTanzaniaProvider } from './providers/mpesa-tanzania.provider';
+import { MpesaKenyaProvider } from './providers/mpesa-kenya.provider';
+import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { StripeProvider } from './providers/stripe.provider';
 import { ShipmentsService } from '../shipments/shipments.service';
 
@@ -40,6 +43,7 @@ function shipment(overrides: Partial<Shipment> = {}): Shipment {
     id: SHIPMENT_ID,
     customerId: CUSTOMER_ID,
     riderId: null,
+    currency: DEFAULT_CURRENCY,
     price: '8500.00',
     commission: '1700.00',
     riderPayout: '6800.00',
@@ -54,6 +58,7 @@ function payment(overrides: Partial<Payment> = {}): Payment {
     customerId: CUSTOMER_ID,
     method: PaymentMethod.MPESA,
     status: PaymentStatus.PROCESSING,
+    currency: DEFAULT_CURRENCY,
     amount: '8500.00',
     externalId: 'MPESA-abc',
     provider: 'MPESA',
@@ -73,7 +78,9 @@ describe('PaymentsService', () => {
   let service: PaymentsService;
   let paymentsRepo: ReturnType<typeof mockRepo>;
   let shipmentsRepo: ReturnType<typeof mockRepo>;
-  let mpesaProvider: { initiate: jest.Mock; refund: jest.Mock };
+  let mpesaTanzaniaProvider: { initiate: jest.Mock; refund: jest.Mock };
+  let mpesaKenyaProvider: { initiate: jest.Mock; refund: jest.Mock };
+  let mtnMomoProvider: { initiate: jest.Mock; refund: jest.Mock };
   let stripeProvider: { initiate: jest.Mock; refund: jest.Mock };
   let shipmentsService: { confirmAfterPayment: jest.Mock; isAssignedRiderOrAdmin: jest.Mock };
   let dataSource: { transaction: jest.Mock };
@@ -82,9 +89,17 @@ describe('PaymentsService', () => {
   beforeEach(async () => {
     paymentsRepo = mockRepo();
     shipmentsRepo = mockRepo();
-    mpesaProvider = {
-      initiate: jest.fn(async () => ({ transactionId: 'MPESA-abc' })),
-      refund: jest.fn(async () => ({ refundId: 'MPESA-REFUND-abc' })),
+    mpesaTanzaniaProvider = {
+      initiate: jest.fn(async () => ({ transactionId: 'MPESA-TZ-abc' })),
+      refund: jest.fn(async () => ({ refundId: 'MPESA-TZ-REFUND-abc' })),
+    };
+    mpesaKenyaProvider = {
+      initiate: jest.fn(async () => ({ transactionId: 'MPESA-KE-abc' })),
+      refund: jest.fn(async () => ({ refundId: 'MPESA-KE-REFUND-abc' })),
+    };
+    mtnMomoProvider = {
+      initiate: jest.fn(async () => ({ transactionId: 'MOMO-abc' })),
+      refund: jest.fn(async () => ({ refundId: 'MOMO-REFUND-abc' })),
     };
     stripeProvider = {
       initiate: jest.fn(async () => ({ transactionId: 'STRIPE-abc' })),
@@ -110,7 +125,9 @@ describe('PaymentsService', () => {
         PaymentsService,
         { provide: getRepositoryToken(Payment), useValue: paymentsRepo },
         { provide: getRepositoryToken(Shipment), useValue: shipmentsRepo },
-        { provide: MpesaProvider, useValue: mpesaProvider },
+        { provide: MpesaTanzaniaProvider, useValue: mpesaTanzaniaProvider },
+        { provide: MpesaKenyaProvider, useValue: mpesaKenyaProvider },
+        { provide: MtnMomoProvider, useValue: mtnMomoProvider },
         { provide: StripeProvider, useValue: stripeProvider },
         { provide: ConfigService, useValue: { get: jest.fn(() => undefined) } },
         { provide: ShipmentsService, useValue: shipmentsService },
@@ -177,7 +194,7 @@ describe('PaymentsService', () => {
       );
 
       expect(result.status).toBe(PaymentStatus.PENDING_CASH_COLLECTION);
-      expect(mpesaProvider.initiate).not.toHaveBeenCalled();
+      expect(mpesaTanzaniaProvider.initiate).not.toHaveBeenCalled();
       expect(stripeProvider.initiate).not.toHaveBeenCalled();
     });
 
@@ -190,19 +207,118 @@ describe('PaymentsService', () => {
         CUSTOMER_ID,
       );
 
-      expect(mpesaProvider.initiate).toHaveBeenCalledWith(
+      expect(mpesaTanzaniaProvider.initiate).toHaveBeenCalledWith(
         '255712345678',
         '8500.00',
         SHIPMENT_ID,
+        DEFAULT_CURRENCY,
       );
       expect(result.status).toBe(PaymentStatus.PROCESSING);
-      expect(result.externalId).toBe('MPESA-abc');
+      expect(result.externalId).toBe('MPESA-TZ-abc');
+    });
+
+    describe('regional mobile-money routing (Phase 4)', () => {
+      it('routes MPESA to the Kenya M-Pesa provider for a KES shipment, not the TZS one', async () => {
+        shipmentsRepo.findOne.mockResolvedValue(shipment({ currency: SupportedCurrency.KES }));
+        paymentsRepo.findOne.mockResolvedValue(undefined);
+
+        const result = await service.initiatePayment(
+          { shipmentId: SHIPMENT_ID, method: PaymentMethod.MPESA, phoneNumber: '254712345678' },
+          CUSTOMER_ID,
+        );
+
+        expect(mpesaKenyaProvider.initiate).toHaveBeenCalledWith(
+          '254712345678',
+          '8500.00',
+          SHIPMENT_ID,
+          SupportedCurrency.KES,
+        );
+        expect(mpesaTanzaniaProvider.initiate).not.toHaveBeenCalled();
+        expect(result.externalId).toBe('MPESA-KE-abc');
+      });
+
+      it('routes MOBILE_MONEY to MTN MoMo for a UGX shipment', async () => {
+        shipmentsRepo.findOne.mockResolvedValue(shipment({ currency: SupportedCurrency.UGX }));
+        paymentsRepo.findOne.mockResolvedValue(undefined);
+
+        const result = await service.initiatePayment(
+          {
+            shipmentId: SHIPMENT_ID,
+            method: PaymentMethod.MOBILE_MONEY,
+            phoneNumber: '256712345678',
+          },
+          CUSTOMER_ID,
+        );
+
+        expect(mtnMomoProvider.initiate).toHaveBeenCalledWith(
+          '256712345678',
+          '8500.00',
+          SHIPMENT_ID,
+          SupportedCurrency.UGX,
+        );
+        expect(result.externalId).toBe('MOMO-abc');
+      });
+
+      it('routes MOBILE_MONEY to MTN MoMo for a RWF shipment too', async () => {
+        shipmentsRepo.findOne.mockResolvedValue(shipment({ currency: SupportedCurrency.RWF }));
+        paymentsRepo.findOne.mockResolvedValue(undefined);
+
+        await service.initiatePayment(
+          {
+            shipmentId: SHIPMENT_ID,
+            method: PaymentMethod.MOBILE_MONEY,
+            phoneNumber: '250712345678',
+          },
+          CUSTOMER_ID,
+        );
+
+        expect(mtnMomoProvider.initiate).toHaveBeenCalledWith(
+          '250712345678',
+          '8500.00',
+          SHIPMENT_ID,
+          SupportedCurrency.RWF,
+        );
+      });
+
+      it('rejects MPESA against a UGX shipment with BadRequestException, before creating any payment row', async () => {
+        shipmentsRepo.findOne.mockResolvedValue(shipment({ currency: SupportedCurrency.UGX }));
+        paymentsRepo.findOne.mockResolvedValue(undefined);
+
+        await expect(
+          service.initiatePayment(
+            { shipmentId: SHIPMENT_ID, method: PaymentMethod.MPESA, phoneNumber: '256712345678' },
+            CUSTOMER_ID,
+          ),
+        ).rejects.toThrow(BadRequestException);
+
+        expect(paymentsRepo.save).not.toHaveBeenCalled();
+        expect(mpesaTanzaniaProvider.initiate).not.toHaveBeenCalled();
+        expect(mtnMomoProvider.initiate).not.toHaveBeenCalled();
+      });
+
+      it('rejects MOBILE_MONEY against a TZS shipment with BadRequestException', async () => {
+        shipmentsRepo.findOne.mockResolvedValue(shipment({ currency: DEFAULT_CURRENCY }));
+        paymentsRepo.findOne.mockResolvedValue(undefined);
+
+        await expect(
+          service.initiatePayment(
+            {
+              shipmentId: SHIPMENT_ID,
+              method: PaymentMethod.MOBILE_MONEY,
+              phoneNumber: '255712345678',
+            },
+            CUSTOMER_ID,
+          ),
+        ).rejects.toThrow(BadRequestException);
+
+        expect(paymentsRepo.save).not.toHaveBeenCalled();
+      });
     });
 
     it('marks the payment FAILED and rethrows when the provider call throws', async () => {
       shipmentsRepo.findOne.mockResolvedValue(shipment());
       paymentsRepo.findOne.mockResolvedValue(undefined);
-      mpesaProvider.initiate.mockRejectedValue(new Error('sandbox timeout'));
+      mpesaTanzaniaProvider.initiate.mockRejectedValue(new Error('sandbox timeout'));
 
       await expect(
         service.initiatePayment(
@@ -354,7 +470,7 @@ describe('PaymentsService', () => {
 
       await service.refund('payment-1', { reason: 'refused delivery' }, requester());
 
-      expect(mpesaProvider.refund).not.toHaveBeenCalled();
+      expect(mpesaTanzaniaProvider.refund).not.toHaveBeenCalled();
       expect(stripeProvider.refund).not.toHaveBeenCalled();
     });
   });

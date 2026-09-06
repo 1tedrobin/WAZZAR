@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -13,6 +14,7 @@ import { Role, UserRole } from '../../database/entities/user-role.entity';
 import { JwtPayload } from './jwt-payload.interface';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { DEFAULT_MARKET, getMarket, phoneMatchesMarket } from '../../common/market';
 
 const BCRYPT_SALT_ROUNDS = 10;
 
@@ -57,12 +59,28 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_SALT_ROUNDS);
 
+    const countryCode = dto.countryCode ?? DEFAULT_MARKET;
+    // Catches the likely-user-error case of picking the wrong market in
+    // a country dropdown — e.g. selecting Kenya but entering a +255
+    // Tanzanian number. Only enforced when countryCode was explicitly
+    // given (dto.countryCode !== undefined): the default-market path
+    // (no selection at all, every pre-Phase-4 caller) never had this
+    // check and still doesn't, since it can't be "wrong" if nothing was
+    // chosen.
+    if (dto.countryCode !== undefined && !phoneMatchesMarket(dto.phone, dto.countryCode)) {
+      throw new BadRequestException(
+        `Phone number ${dto.phone} doesn't look like a ${getMarket(dto.countryCode).name} ` +
+          `number (expected a +${getMarket(dto.countryCode).callingCode} prefix)`,
+      );
+    }
+
     const user = await this.usersRepo.save(
       this.usersRepo.create({
         phone: dto.phone,
         email: dto.email ?? null,
         passwordHash,
         fullName: dto.fullName,
+        countryCode,
       }),
     );
 

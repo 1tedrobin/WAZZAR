@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PricingService } from './pricing.service';
 import { PricingConfig, PricingMode } from '../../database/entities/pricing-config.entity';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 
 // Minimal fake of the slice of Repository<T> this service actually calls.
 function mockRepo() {
@@ -21,6 +22,7 @@ function activeConfig(overrides: Partial<PricingConfig> = {}): PricingConfig {
   return {
     id: 'config-1',
     pricingMode: PricingMode.HYBRID,
+    currency: DEFAULT_CURRENCY,
     isActive: true,
     basePrice: '5000.00',
     pricePerKm: '500.00',
@@ -165,6 +167,35 @@ describe('PricingService', () => {
         NotFoundException,
       );
     });
+
+    it('defaults to TZS and passes that currency through to the repo query and the quote', async () => {
+      configRepo.findOne.mockResolvedValue(activeConfig());
+
+      const quote = await service.calculatePrice({ distanceKm: 5, weightKg: 2 });
+
+      expect(quote.currency).toBe(DEFAULT_CURRENCY);
+      const whereArg = configRepo.findOne.mock.calls[0][0].where;
+      expect(whereArg[0]).toEqual(expect.objectContaining({ currency: DEFAULT_CURRENCY }));
+      expect(whereArg[1]).toEqual(expect.objectContaining({ currency: DEFAULT_CURRENCY }));
+    });
+
+    it('resolves an explicitly-requested currency independently of the default market', async () => {
+      configRepo.findOne.mockResolvedValue(
+        activeConfig({ id: 'config-kes', currency: SupportedCurrency.KES, basePrice: '100.00' }),
+      );
+
+      const quote = await service.calculatePrice({
+        currency: SupportedCurrency.KES,
+        distanceKm: 5,
+        weightKg: 2,
+      });
+
+      expect(quote.currency).toBe(SupportedCurrency.KES);
+      const whereArg = configRepo.findOne.mock.calls[0][0].where;
+      expect(whereArg[0]).toEqual(
+        expect.objectContaining({ currency: SupportedCurrency.KES }),
+      );
+    });
   });
 
   describe('createConfig', () => {
@@ -186,12 +217,35 @@ describe('PricingService', () => {
       expect(configRepo.save).not.toHaveBeenCalled();
     });
 
-    it('deactivates any currently-active config before creating the new one', async () => {
+    it('deactivates any currently-active config in the same currency before creating the new one', async () => {
       await service.createConfig(validDto, 'admin-1');
 
       expect(configRepo.update).toHaveBeenCalledWith(
-        { isActive: true },
+        { isActive: true, currency: DEFAULT_CURRENCY },
         expect.objectContaining({ isActive: false }),
+      );
+    });
+
+    it('defaults a config to TZS when no currency is given', async () => {
+      await service.createConfig(validDto, 'admin-1');
+
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ currency: DEFAULT_CURRENCY }),
+      );
+    });
+
+    it('only deactivates configs in the same currency, leaving other markets untouched', async () => {
+      await service.createConfig(
+        { ...validDto, currency: SupportedCurrency.KES },
+        'admin-1',
+      );
+
+      expect(configRepo.update).toHaveBeenCalledWith(
+        { isActive: true, currency: SupportedCurrency.KES },
+        expect.objectContaining({ isActive: false }),
+      );
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ currency: SupportedCurrency.KES }),
       );
     });
 

@@ -314,6 +314,141 @@ export function removeStaff(id) {
   return request(`/business/staff/${id}`, { method: "DELETE" });
 }
 
+/* ------------------------------------------------------------------ */
+/* API keys (Phase 3 — "API subscriptions": lets this business call    */
+/* WAZZAR's public API directly, e.g. from a warehouse system or a     */
+/* Zapier integration, instead of only through this dashboard. See     */
+/* backend's business-api-keys + public-api modules.)                  */
+/* ------------------------------------------------------------------ */
+
+export function listApiKeys() {
+  return request("/business/api-keys");
+}
+
+// Response includes `key` — the plaintext secret — but ONLY on this
+// call. The backend never returns it again; list() only ever returns
+// the non-secret keyPrefix. Callers must show/copy it immediately.
+export function createApiKey({ name, scopes }) {
+  return request("/business/api-keys", {
+    method: "POST",
+    body: { name, scopes },
+  });
+}
+
+export function revokeApiKey(id) {
+  return request(`/business/api-keys/${id}`, { method: "DELETE" });
+}
+
+/* ------------------------------------------------------------------ */
+/* Invoices (Phase 3 — "advanced invoicing": a real generated          */
+/* statement over a date range of this business's own COMPLETED       */
+/* payments, downloadable as a PDF, beyond the raw per-delivery        */
+/* payment history above. See backend's invoices module.)              */
+/* ------------------------------------------------------------------ */
+
+export function listInvoices() {
+  return request("/business/invoices");
+}
+
+export function generateInvoice({ periodStart, periodEnd, taxRatePercent }) {
+  return request("/business/invoices", {
+    method: "POST",
+    body: { periodStart, periodEnd, taxRatePercent },
+  });
+}
+
+export function getInvoice(id) {
+  return request(`/business/invoices/${id}`);
+}
+
+// Not routed through request() — that helper always parses the body as
+// JSON, but this endpoint returns raw PDF bytes. Fetches the file as a
+// Blob (still attaching the bearer token by hand, same as request()
+// does) and triggers a normal browser download via a throwaway <a>,
+// same technique downloadPaymentHistoryCsv uses for its CSV export.
+export async function downloadInvoicePdf(id, filename) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/business/invoices/${id}/pdf`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    throw new ApiError(res.status, data);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || `${id}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ------------------------------------------------------------------ */
+/* Analytics (Phase 3 — a real backend-computed dashboard over this    */
+/* business's full shipment history, not just whatever page of        */
+/* /shipments happens to be loaded client-side. See backend's          */
+/* analytics module.)                                                  */
+/* ------------------------------------------------------------------ */
+
+export function getAnalyticsSummary({ periodStart, periodEnd } = {}) {
+  const params = new URLSearchParams();
+  if (periodStart) params.set("periodStart", periodStart);
+  if (periodEnd) params.set("periodEnd", periodEnd);
+  const qs = params.toString();
+  return request(`/business/analytics/summary${qs ? `?${qs}` : ""}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Bulk send (Phase 3 — the last item: upload a CSV of pickup/dropoff  */
+/* rows and create many real shipments in one go, instead of one at a  */
+/* time through the New Delivery form. See backend's bulk-shipments    */
+/* module.)                                                             */
+/* ------------------------------------------------------------------ */
+
+// Not routed through request() — a CSV upload is multipart/form-data,
+// not JSON, so the Content-Type has to be left for the browser to set
+// (with its multipart boundary) rather than forced to
+// "application/json" the way request() does.
+export async function uploadBulkShipments(file) {
+  const token = getToken();
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/business/bulk-shipments`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    throw new ApiError(res.status, data);
+  }
+  return data;
+}
+
+// Same blob-download technique as downloadInvoicePdf, for the sample
+// CSV a business fills in before uploading.
+export async function downloadBulkShipmentsTemplate() {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/business/bulk-shipments/template`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    throw new ApiError(res.status, data);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "wazzar-bulk-shipments-template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Moves a paid, CONFIRMED shipment into the dispatch queue. A real
 // dispatcher/admin app (or an automated rule) would normally trigger
 // this; this app calls it itself right after payment confirms since

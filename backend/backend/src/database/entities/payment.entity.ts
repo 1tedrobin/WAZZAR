@@ -5,9 +5,17 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 
 export enum PaymentMethod {
   MPESA = 'MPESA',
+  // Mobile-money payments outside the M-Pesa brand — currently MTN
+  // Mobile Money (Uganda, Rwanda). Kept generic rather than
+  // MTN_MOMO/AIRTEL_MONEY-per-country because the actual telco is
+  // resolved server-side from the payment's currency (see
+  // PaymentsService.resolveMobileMoneyProvider), not chosen by the
+  // client — see PHASE4_REGIONAL_PAYMENT_PROVIDERS.md.
+  MOBILE_MONEY = 'MOBILE_MONEY',
   STRIPE = 'STRIPE',
   CASH = 'CASH',
 }
@@ -47,6 +55,12 @@ export class Payment {
     default: PaymentStatus.PENDING,
   })
   status: PaymentStatus;
+
+  // Copied from Shipment.currency at initiatePayment() time — amount,
+  // refundedAmount, and everything sent to a provider are denominated in
+  // this currency. See src/common/currency.ts.
+  @Column({ type: 'enum', enum: SupportedCurrency, default: DEFAULT_CURRENCY })
+  currency: SupportedCurrency;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
   amount: string;
@@ -93,4 +107,16 @@ export class Payment {
 
   @Column({ name: 'failed_at', type: 'timestamp', nullable: true })
   failedAt: Date | null;
+
+  // NOT a @Column — deliberately transient. Set only in-memory, on the
+  // object returned from PaymentsService.initiate() right after a
+  // provider call (see ProviderInitiateResult.isMock and
+  // payments.service.ts), so a response can say "this wasn't a real
+  // charge" when no real Safaricom/Stripe credentials are configured
+  // yet. Never written to the database and never populated when a
+  // Payment is loaded back out of it (e.g. via findOne/getHistory) —
+  // whether a *past* payment was mock or real isn't tracked once it's
+  // saved. A future pass could add a real persisted column if that
+  // history ever needs to be queryable.
+  isMock?: boolean;
 }

@@ -139,6 +139,19 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(this.room(shipmentId)).emit('tracking:update', snapshot);
   }
 
+  // Phase 2 (Intercity/Trunk Network) — called by LegsService/
+  // TrackingChannelsService whenever a leg's status changes or a new
+  // tracking-channel ping is ingested for an INTERCITY shipment. Reuses
+  // the same shipment:{id} room `tracking:update` already broadcasts to
+  // (a subscribed customer doesn't need to know or care whether their
+  // shipment is LOCAL or INTERCITY), but on a distinctly-named event —
+  // `tracking:leg-update` — so this is purely additive: no existing
+  // `tracking:update` listener needs to change to ignore it, and nothing
+  // about handleSubscribe/broadcastToShipment above was touched.
+  broadcastLegUpdate(shipmentId: string, payload: Record<string, unknown>): void {
+    this.server.to(this.room(shipmentId)).emit('tracking:leg-update', payload);
+  }
+
   private room(shipmentId: string): string {
     return `shipment:${shipmentId}`;
   }

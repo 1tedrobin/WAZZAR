@@ -21,5 +21,14 @@ import { TrackingService } from './tracking.service';
   ],
   controllers: [TrackingController],
   providers: [TrackingService, TrackingGateway],
+  // Exported so PublicApiModule can call getShipmentTracking() behind
+  // the tracking:read API-key scope — same reasoning ShipmentsModule
+  // exports ShipmentsService. TrackingGateway is also exported so
+  // Phase 2's LegsModule/TrackingChannelsModule can push
+  // `tracking:leg-update` events to the same shipment:{id} room this
+  // gateway already broadcasts Phase 1 rider-GPS updates to (see
+  // TrackingGateway.broadcastLegUpdate) — additive, doesn't change
+  // anything about how Phase 1's own `tracking:update` broadcast works.
+  exports: [TrackingService, TrackingGateway],
 })
 export class TrackingModule {}

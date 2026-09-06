@@ -708,8 +708,136 @@ after merging a second backend build — so is a good deal more:**
   unterminated comment silently deleting 83 lines of real code,
   including its entire sidebar nav) — not in this backend, but caught
   by the same "actually run it" discipline.
-  section before trusting either in production.
 
 See `docs/delivery-notes/MASTER_GAPS_AND_ROADMAP.md` for what's still
-open. Phase 2 pieces (intercity/trunk, Latra tracking, SMS notifications) —
-see `WAZZAR_Unified_Model_Updated.md` for roadmap.
+open.
+
+## Definition of "done" — Piece 15: Phase 2 (Intercity/Trunk Network) — Backend Foundation
+
+**2026-09-03.** Phase 2 was 0% complete going into this pass (see the
+completion breakdown that kicked it off). Full detail in
+`docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md` — short version:
+
+- New entities/migrations: `hubs`, `hub_assignments`, `partner_operators`,
+  `carriers`, `legs`, `tracking_channels`, `tracking_events`, plus an
+  additive `shipments.shipment_type`/`leg_count`/`current_leg` (every
+  existing/Phase-1 shipment stays `LOCAL`, unaffected).
+- New modules: `hubs`, `partner-operators`, `carriers` (CRUD, following
+  the same access-control shape existing modules use), `legs` (the core
+  — plans a 3-leg intercity shipment and drives each leg's
+  PENDING→ASSIGNED→IN_PROGRESS→COMPLETED lifecycle, cascading back onto
+  the *existing* `ShipmentStatus` state machine — no new statuses, no
+  changes to `shipment-status.transitions.ts`), `tracking-channels`
+  (ingests trunk-leg tracking pings from a dispatcher, a partner
+  operator's own system via a new `PartnerApiKeyGuard`, or a
+  `LatraProvider` polling cron — same mock-by-default Wire Pattern as
+  `MpesaProvider`/`StripeProvider`, though unlike those, LATRA has no
+  real sandbox to have verified the real-credentials branch against).
+- `TrackingGateway` gained one new additive broadcast method
+  (`broadcastLegUpdate`) on a new `tracking:leg-update` event, over the
+  same Socket.IO room Phase 1's `tracking:update` already uses —
+  Phase 1's own broadcast is untouched.
+- **Verified for real, first time with real npm registry access in this
+  project's sandbox history:** `npm install`, `tsc --noEmit`, `eslint`,
+  the full `jest` suite (270/270 passing, 25/25 suites, 42 of them new),
+  and `nest build` (real `dist/` output) all ran clean. Still never run
+  against a real Postgres database or a live HTTP server.
+- **Unrelated real bug found and fixed in passing** (only surfaced
+  because `tsc` finally ran for real): `payments.service.ts` set
+  `saved.isMock = result.isMock` — neither field exists anywhere on
+  `Payment` or `ProviderInitiateResult`; dead code from some earlier,
+  never-finished intent, removed.
+
+### Known simplifications (Piece 15)
+
+No rider/carrier self-service (dispatcher/admin-only leg management),
+always exactly 3 legs per intercity shipment, intercity pricing reuses
+Phase 1's flat rate card against the summed leg distance (no separate
+carrier-cost/revenue-share model), cancelling one leg cancels the whole
+shipment (no reroute), `partner_operators.latra_api_key` is unencrypted
+plain text (flagged directly on the entity — no encryption-at-rest
+utility exists anywhere in this codebase yet). Full list in
+`docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md`.
+
+## Next piece
+
+Dispatcher-facing UI (leg queue, assign/start/complete/cancel) and
+Hubs/Carriers/Partner Operators management are now wired into
+`apps/admin` (2026-09-03, same day — no separate dispatcher app; see
+`apps/admin/README_ADMIN_WIRING.md`), which also added one backend
+endpoint, `GET /legs/active`. Rider/carrier self-service leg updates
+(`self-claim`/`self-start`/`self-complete` for riders,
+`carrier-start`/`carrier-complete` for partner operators) and
+`apps/customer`'s intercity booking flow both shipped 2026-09-05 — see
+`docs/delivery-notes/PHASE2_INTERCITY_FOUNDATION.md`'s "Update,
+2026-09-05" for the full detail, including the two self-service gaps
+still flagged (no geographic scoping on self-claim, no
+proof-of-delivery capture on a final leg). Rider app UI for this new
+self-service — `apps/rider` doesn't call any of it yet — is the most
+obvious next piece.
+
+## Definition of "done" — Piece 16: Phase 3 (API subscriptions, invoicing, analytics, bulk send) and Phase 4 (multi-currency/multi-market) — merged in from a parallel branch
+
+**2026-09-05 (merge).** While Piece 15 above (rider/carrier self-service,
+customer intercity booking) was being built, a parallel line of work
+built out Phase 3 in full and started Phase 4. This piece is that work,
+reconciled into the same codebase as Piece 15 — the two touched mostly
+disjoint modules and merged cleanly; a handful of shared files (`legs.service.ts`,
+`legs.module.ts`, `hubs.controller.ts`, `app.module.ts`, `apps/customer`,
+`apps/business`) were combined by hand rather than picking one side.
+
+**Phase 3 — complete as scoped:**
+- `business-api-keys` + `public-api`: a business can generate a real API
+  key (shown once, in plaintext, at creation only) and call a small
+  public surface (create/list/get shipments, read tracking) directly via
+  `X-API-Key`, scoped per key.
+- `invoices`: on-demand PDF invoice/statement generation over a date
+  range, from the business dashboard's Billing page.
+- `analytics`: a business analytics dashboard (delivery volume/revenue
+  trends).
+- `bulk-shipments`: CSV bulk shipment upload from the business dashboard
+  (100-row cap — see `docs/delivery-notes/CSV_BULK_SEND.md`).
+- See `docs/delivery-notes/API_SUBSCRIPTIONS.md`,
+  `docs/delivery-notes/ADVANCED_INVOICING.md`,
+  `docs/delivery-notes/ANALYTICS_DASHBOARD.md`,
+  `docs/delivery-notes/CSV_BULK_SEND.md`, and
+  `docs/delivery-notes/FULL_SYSTEM_AUDIT_2026-09-03.md` (a full-repo
+  lint/build/test pass across all four Phase 3 features) for detail and
+  known limitations.
+
+**Phase 4 — underway, not complete:**
+- Multi-currency core (TZS/KES/UGX/RWF) threaded through pricing,
+  shipments, and payments — see
+  `docs/delivery-notes/PHASE4_MULTI_CURRENCY_CORE.md`.
+- Per-user market/country code (`users.country_code`), driving a
+  shipment's default currency and a phone-number/market cross-check at
+  registration — see `docs/delivery-notes/PHASE4_LOCALE_MARKET_CONFIG.md`.
+- Regional mobile-money providers: `MpesaTanzaniaProvider` (TZS),
+  `MpesaKenyaProvider` (KES), `MtnMomoProvider` (UGX/RWF) — replacing the
+  old `MpesaProvider`, which turned out to actually be Safaricom Kenya's
+  Daraja API despite its Tanzania-labeled naming. See
+  `docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md` and
+  `docs/delivery-notes/TANZANIA_MPESA_FIX.md` — the Tanzania provider is
+  built from community reverse-engineering (no official Vodacom docs)
+  and is meaningfully less verified than every other provider here.
+  **None of Phase 4 has been run against a real build/test/database.**
+  Regulatory/compliance requirements per country and Airtel Money remain
+  unstarted.
+
+**Also fixed in this merge:** a project-wide TypeScript compile error
+(`Payment.isMock` referenced but never declared — dead code from an
+earlier, never-finished intent, removed) and a missing
+`socket.io-client` dependency that left the rider app unable to build.
+
+See `docs/delivery-notes/MASTER_GAPS_AND_ROADMAP.md` for the full,
+up-to-date picture across every phase.
+
+## Next piece
+
+With Piece 15 and Piece 16 both in, the obvious next pieces are: rider
+app UI for the self-service leg endpoints (still unconsumed by any
+frontend), running Phase 4 against a real Postgres database and the
+regional providers' actual sandboxes, and closing the two flagged
+self-service gaps (geographic scoping on self-claim, proof-of-delivery
+capture on an intercity shipment's final leg).
+

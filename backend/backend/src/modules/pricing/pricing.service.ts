@@ -6,6 +6,7 @@ import {
   SurgeWindow,
 } from '../../database/entities/pricing-config.entity';
 import { centsFromDecimal, decimalFromCents } from '../../common/money';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 import { CalculatePriceDto } from './dto/calculate-price.dto';
 import { CreatePricingConfigDto } from './dto/create-pricing-config.dto';
 import { UpdatePricingConfigDto } from './dto/update-pricing-config.dto';
@@ -14,6 +15,7 @@ const COMMISSION_SPLIT_TOLERANCE = 0.01;
 
 export interface PriceQuote {
   pricingConfigId: string;
+  currency: SupportedCurrency;
   basePrice: string;
   distanceCharge: string;
   weightCharge: string;
@@ -34,7 +36,8 @@ export class PricingService {
 
   async calculatePrice(dto: CalculatePriceDto): Promise<PriceQuote> {
     const at = dto.at ? new Date(dto.at) : new Date();
-    const config = await this.getEffectiveConfig(at);
+    const currency = dto.currency ?? DEFAULT_CURRENCY;
+    const config = await this.getEffectiveConfig(at, currency);
 
     const baseCents = centsFromDecimal(config.basePrice);
 
@@ -79,6 +82,7 @@ export class PricingService {
 
     return {
       pricingConfigId: config.id,
+      currency: config.currency,
       basePrice: decimalFromCents(baseCents),
       distanceCharge: decimalFromCents(distanceCents),
       weightCharge: decimalFromCents(weightCents),
@@ -91,9 +95,10 @@ export class PricingService {
     };
   }
 
-  // Public/no-auth: "what would this cost right now" for the active config.
-  async getActiveConfig(): Promise<PricingConfig> {
-    return this.getEffectiveConfig(new Date());
+  // Public/no-auth: "what would this cost right now" for the active config
+  // in the given currency/market. Defaults to TZS.
+  async getActiveConfig(currency: SupportedCurrency = DEFAULT_CURRENCY): Promise<PricingConfig> {
+    return this.getEffectiveConfig(new Date(), currency);
   }
 
   async getAllConfigs(): Promise<PricingConfig[]> {
@@ -110,20 +115,24 @@ export class PricingService {
     );
     this.assertValidSurgeWindows(dto.surgeActiveHours);
 
+    const currency = dto.currency ?? DEFAULT_CURRENCY;
     const effectiveFrom = dto.effectiveFrom ? new Date(dto.effectiveFrom) : new Date();
 
-    // Only one config is ever active at a time in Phase 1 — close out
+    // Only one config is ever active at a time PER CURRENCY — close out
     // whatever was active before inserting the new one, rather than
     // leaving two configs both claiming isActive=true (which would make
     // getEffectiveConfig()'s "most recent effectiveFrom" tiebreak the
-    // only thing keeping quotes deterministic).
+    // only thing keeping quotes deterministic). Scoped to `currency` so
+    // creating a KES config, for example, never touches the active TZS
+    // config for a different market.
     await this.configRepo.update(
-      { isActive: true },
+      { isActive: true, currency },
       { isActive: false, effectiveTo: effectiveFrom },
     );
 
     const config = this.configRepo.create({
       pricingMode: dto.pricingMode,
+      currency,
       isActive: true,
       basePrice: dto.basePrice.toString(),
       pricePerKm: (dto.pricePerKm ?? 0).toString(),
@@ -196,20 +205,28 @@ export class PricingService {
     return this.configRepo.save(config);
   }
 
-  // The config active at instant `at`: isActive, started by `at`, and
-  // (if it has an end) not yet ended. Ties broken by most recent
-  // effectiveFrom — matters right after createConfig() runs, in the
-  // instant both the old (now effectiveTo = at) and new config could
-  // otherwise both match a query for exactly `at`.
-  private async getEffectiveConfig(at: Date): Promise<PricingConfig> {
+  // The config active at instant `at` for the given currency/market:
+  // isActive, started by `at`, and (if it has an end) not yet ended. Ties
+  // broken by most recent effectiveFrom — matters right after
+  // createConfig() runs, in the instant both the old (now
+  // effectiveTo = at) and new config could otherwise both match a query
+  // for exactly `at`. Scoping by currency means each market's "active
+  // config" is fully independent — a KES config existing (or not) never
+  // affects TZS quotes and vice versa.
+  private async getEffectiveConfig(
+    at: Date,
+    currency: SupportedCurrency = DEFAULT_CURRENCY,
+  ): Promise<PricingConfig> {
     const config = await this.configRepo.findOne({
       where: [
         {
+          currency,
           isActive: true,
           effectiveFrom: LessThanOrEqual(at),
           effectiveTo: MoreThan(at),
         },
         {
+          currency,
           isActive: true,
           effectiveFrom: LessThanOrEqual(at),
           effectiveTo: IsNull(),
@@ -219,7 +236,9 @@ export class PricingService {
     });
 
     if (!config) {
-      throw new NotFoundException('No active pricing configuration for this time');
+      throw new NotFoundException(
+        `No active pricing configuration for ${currency} at this time`,
+      );
     }
 
     return config;

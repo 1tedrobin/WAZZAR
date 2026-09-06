@@ -5,6 +5,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 
 export enum PricingMode {
   DISTANCE = 'DISTANCE',
@@ -18,11 +19,14 @@ export enum PricingMode {
 export type SurgeWindow = [number, number];
 
 // Time-versioned pricing rule. Only one config is ever `isActive` at a
-// time in this Phase 1 model (see PricingService.createConfig, which
-// deactivates whatever was active before inserting the new one) — the
-// effective_from/effective_to range is what lets PricingService answer
-// "what price applied to a shipment quoted 3 weeks ago" for
-// reconciliation, even after the config has changed since.
+// time PER CURRENCY in this model (see PricingService.createConfig, which
+// deactivates whatever was active before inserting the new one, scoped to
+// the same currency) — the effective_from/effective_to range is what lets
+// PricingService answer "what price applied to a shipment quoted 3 weeks
+// ago" for reconciliation, even after the config has changed since.
+// Phase 1 only ever creates TZS configs, so this degenerates back to
+// exactly the old single-config-globally behavior until a second
+// currency's pricing is actually introduced.
 @Entity('pricing_configs')
 export class PricingConfig {
   @PrimaryGeneratedColumn('uuid')
@@ -30,6 +34,11 @@ export class PricingConfig {
 
   @Column({ name: 'pricing_mode', type: 'enum', enum: PricingMode })
   pricingMode: PricingMode;
+
+  // Which market this config prices for. Immutable after creation — see
+  // AddCurrencyToMoneyTables migration and src/common/currency.ts.
+  @Column({ type: 'enum', enum: SupportedCurrency, default: DEFAULT_CURRENCY })
+  currency: SupportedCurrency;
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;

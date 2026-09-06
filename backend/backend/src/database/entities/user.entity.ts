@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { UserRole } from './user-role.entity';
+import { DEFAULT_MARKET, MarketCountryCode } from '../../common/market';
 
 export enum UserStatus {
   ACTIVE = 'ACTIVE',
@@ -38,6 +39,13 @@ export class User {
 
   @Column({ name: 'profile_photo_url', type: 'text', nullable: true })
   profilePhotoUrl: string | null;
+
+  // Which market this user registered in — see src/common/market.ts.
+  // Drives the default currency for shipments they create when they
+  // don't explicitly choose one (see ShipmentsService.create). Set once
+  // at registration; there's no "move markets" flow yet.
+  @Column({ name: 'country_code', type: 'enum', enum: MarketCountryCode, default: DEFAULT_MARKET })
+  countryCode: MarketCountryCode;
 
   @Column({
     type: 'enum',

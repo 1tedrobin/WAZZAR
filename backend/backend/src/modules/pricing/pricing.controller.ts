@@ -1,6 +1,18 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../database/entities/user-role.entity';
+import { DEFAULT_CURRENCY, SupportedCurrency, isSupportedCurrency } from '../../common/currency';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -26,10 +38,16 @@ export class PricingController {
     return this.pricingService.calculatePrice(dto);
   }
 
-  // GET /pricing/active — no auth required
+  // GET /pricing/active?currency=KES — no auth required. Defaults to TZS
+  // when omitted, same as before this query param existed.
   @Get('active')
-  getActive() {
-    return this.pricingService.getActiveConfig();
+  getActive(@Query('currency') currency?: string) {
+    if (currency !== undefined && !isSupportedCurrency(currency)) {
+      throw new BadRequestException(`Unsupported currency "${currency}"`);
+    }
+    return this.pricingService.getActiveConfig(
+      (currency as SupportedCurrency | undefined) ?? DEFAULT_CURRENCY,
+    );
   }
 
   // GET /pricing/configs — admin only

@@ -17,6 +17,7 @@
  *
  * All fields are optional env var overrides with workable defaults for
  * local dev — nothing is required to just run it:
+ *   SEED_PRICING_CURRENCY               TZS | KES | UGX | RWF, default TZS
  *   SEED_PRICING_MODE                  DISTANCE | WEIGHT | HYBRID, default HYBRID
  *   SEED_PRICING_BASE_PRICE            default 2000        (TZS)
  *   SEED_PRICING_PER_KM                default 500         (TZS/km)
@@ -33,18 +34,22 @@
  * hours) — matches the [[startHour, endHour), ...] shape
  * PricingService.calculateSurgeMultiplier() expects.
  *
- * Idempotent: if an active config already exists, the script leaves it
- * alone and exits — it does NOT deactivate/replace it the way
+ * Idempotent PER CURRENCY: if an active config already exists for the
+ * requested SEED_PRICING_CURRENCY, the script leaves it alone and exits
+ * for that currency — it does NOT deactivate/replace it the way
  * PricingService.createConfig() does for an admin-initiated price
  * change. This script's only job is making sure a fresh database isn't
- * stuck with zero configs; it's not a tool for rolling out a new price.
- * Use PUT /pricing/configs/:id or POST /pricing/configs (admin-only) for
- * that once the system is live.
+ * stuck with zero configs for a given market; it's not a tool for
+ * rolling out a new price. Use PUT /pricing/configs/:id or
+ * POST /pricing/configs (admin-only) for that once the system is live.
+ * Run it once per currency (with SEED_PRICING_CURRENCY set) to seed
+ * more than one market.
  */
 import 'reflect-metadata';
 import { dataSourceOptions } from '../data-source';
 import { DataSource } from 'typeorm';
 import { PricingConfig, PricingMode, SurgeWindow } from '../entities/pricing-config.entity';
+import { DEFAULT_CURRENCY, isSupportedCurrency } from '../../common/currency';
 
 const COMMISSION_SPLIT_TOLERANCE = 0.01;
 
@@ -60,6 +65,13 @@ function envNumber(name: string, fallback: number): number {
 }
 
 async function seedPricing() {
+  const currencyInput = (process.env.SEED_PRICING_CURRENCY || DEFAULT_CURRENCY).toUpperCase();
+  if (!isSupportedCurrency(currencyInput)) {
+    console.error(`SEED_PRICING_CURRENCY must be a supported currency, got "${currencyInput}". Aborting.`);
+    process.exit(1);
+  }
+  const currency = currencyInput;
+
   const modeInput = (process.env.SEED_PRICING_MODE || 'HYBRID').toUpperCase();
   if (!Object.values(PricingMode).includes(modeInput as PricingMode)) {
     console.error(
@@ -106,11 +118,11 @@ async function seedPricing() {
   const configRepo = dataSource.getRepository(PricingConfig);
 
   try {
-    const existingActive = await configRepo.findOne({ where: { isActive: true } });
+    const existingActive = await configRepo.findOne({ where: { isActive: true, currency } });
 
     if (existingActive) {
       console.log(
-        `An active pricing config already exists (${existingActive.id}, ` +
+        `An active ${currency} pricing config already exists (${existingActive.id}, ` +
           `effective from ${existingActive.effectiveFrom.toISOString()}) — not modifying it. ` +
           `Use PUT /pricing/configs/${existingActive.id} or POST /pricing/configs to change pricing.`,
       );
@@ -119,6 +131,7 @@ async function seedPricing() {
 
     const config = configRepo.create({
       pricingMode,
+      currency,
       isActive: true,
       basePrice: basePrice.toString(),
       pricePerKm: pricePerKm.toString(),
@@ -137,7 +150,7 @@ async function seedPricing() {
     });
 
     const saved = await configRepo.save(config);
-    console.log(`Created active pricing config ${saved.id}.`);
+    console.log(`Created active ${currency} pricing config ${saved.id}.`);
     console.log(
       `  ${pricingMode} mode — base ${basePrice}, +${pricePerKm}/km after ${includedDistanceKm}km, ` +
         `+${pricePerKg}/kg after ${includedWeightKg}kg, ${platformCommissionPercent}/${riderPayoutPercent} ` +

@@ -4,6 +4,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
 
 export enum ShipmentStatus {
   CREATED = 'CREATED',
@@ -25,6 +26,15 @@ export interface LocationPoint {
   longitude: number;
   address: string;
   instruction?: string;
+}
+
+// Phase 2 (Intercity/Trunk Network) — LOCAL is every Phase 1 shipment
+// (single rider, pickup straight to dropoff, unchanged). INTERCITY is
+// new: created via POST /shipments/intercity (see LegsService), backed
+// by 1+ Leg rows instead of being fulfilled directly by shipments.riderId.
+export enum ShipmentType {
+  LOCAL = 'LOCAL',
+  INTERCITY = 'INTERCITY',
 }
 
 // NOTE: customer_id / rider_id are plain UUID columns, not TypeORM
@@ -71,6 +81,14 @@ export class Shipment {
   @Column({ name: 'package_description', type: 'text', nullable: true })
   packageDescription: string | null;
 
+  // Set from the PricingConfig's currency at quote time (see
+  // ShipmentsService.create) — the currency price/commission/riderPayout
+  // below are all denominated in. Never null: defaults to TZS even
+  // before a price exists, since a currency is chosen for the shipment's
+  // market up front, independent of whether pricing has resolved yet.
+  @Column({ type: 'enum', enum: SupportedCurrency, default: DEFAULT_CURRENCY })
+  currency: SupportedCurrency;
+
   @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
   price: string | null;
 
@@ -106,4 +124,28 @@ export class Shipment {
 
   @Column({ name: 'completed_at', type: 'timestamp', nullable: true })
   completedAt: Date | null;
+
+  // Phase 2 (Intercity/Trunk Network) — additive, see AddIntercityShipmentFields
+  // migration. Defaults keep every existing/Phase-1-created row exactly as
+  // it was: shipmentType LOCAL, legCount/currentLeg null (a LOCAL shipment
+  // has no Leg rows and is still fulfilled directly via riderId, same as
+  // before this migration). Only LegsService.planIntercityShipment sets
+  // these to non-default values, on a new shipment, at creation time —
+  // nothing rewrites them on an existing LOCAL shipment.
+  @Column({
+    name: 'shipment_type',
+    type: 'enum',
+    enum: ShipmentType,
+    default: ShipmentType.LOCAL,
+  })
+  shipmentType: ShipmentType;
+
+  @Column({ name: 'leg_count', type: 'int', nullable: true })
+  legCount: number | null;
+
+  // 1-based index into the shipment's Leg rows (by `sequence`) — which
+  // leg is currently in progress. Advanced by LegsService.updateStatus
+  // when a leg completes; null for LOCAL shipments (no legs to index).
+  @Column({ name: 'current_leg', type: 'int', nullable: true })
+  currentLeg: number | null;
 }

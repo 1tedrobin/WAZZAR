@@ -1,5 +1,6 @@
 import {
   IsEmail,
+  IsEnum,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -9,6 +10,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { Role } from '../../../database/entities/user-role.entity';
+import { MarketCountryCode } from '../../../common/market';
 
 // Self-signup is limited to these three — ADMIN / SUPER_ADMIN are granted
 // out-of-band, never through the public endpoint.
@@ -17,6 +19,17 @@ export const SELF_SIGNUP_ROLES = [Role.CUSTOMER, Role.RIDER, Role.BUSINESS] as c
 export class RegisterDto {
   @IsPhoneNumber(undefined, { message: 'phone must be a valid phone number, e.g. +255712345678' })
   phone: string;
+
+  // Which market this account belongs to. Deliberately no default
+  // initializer here (same reasoning as CreateShipmentDto.currency) —
+  // AuthService.register applies the actual TZ fallback explicitly, and
+  // cross-checks a given countryCode against `phone`'s calling code so a
+  // wrong dropdown selection is caught at signup rather than silently
+  // producing a customer who gets KES quotes for a Tanzanian number (or
+  // the reverse).
+  @IsEnum(MarketCountryCode)
+  @IsOptional()
+  countryCode?: MarketCountryCode;
 
   @IsEmail()
   @IsOptional()

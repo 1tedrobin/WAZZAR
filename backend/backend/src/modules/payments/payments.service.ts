@@ -14,6 +14,7 @@ import { Payment, PaymentMethod, PaymentStatus } from '../../database/entities/p
 import { Shipment } from '../../database/entities/shipment.entity';
 import { Role } from '../../database/entities/user-role.entity';
 import { centsFromDecimal, decimalFromCents } from '../../common/money';
+import { SupportedCurrency } from '../../common/currency';
 import { JwtPayload } from '../auth/jwt-payload.interface';
 import { ShipmentsService } from '../shipments/shipments.service';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
@@ -21,7 +22,9 @@ import { MpesaWebhookDto } from './dto/mpesa-webhook.dto';
 import { PaymentHistoryQueryDto } from './dto/payment-history-query.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { StripeWebhookDto } from './dto/stripe-webhook.dto';
-import { MpesaProvider } from './providers/mpesa.provider';
+import { MpesaTanzaniaProvider } from './providers/mpesa-tanzania.provider';
+import { MpesaKenyaProvider } from './providers/mpesa-kenya.provider';
+import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { StripeProvider } from './providers/stripe.provider';
 import { getStripeClient } from './providers/stripe-client';
 import { verifyWebhookSignature } from './webhook-signature';
@@ -43,9 +46,16 @@ const OPEN_PAYMENT_STATUSES = [
 export interface ReconciliationReport {
   date: string;
   paymentsCompleted: number;
+  // NOTE: totalAmount/totalRefunded sum raw decimal amounts across every
+  // currency the day had payments in. That's meaningless once more than
+  // one currency is live (summing TZS and KES amounts isn't a real
+  // number) — byCurrency below is the per-market breakdown to actually
+  // use once Phase 4 traffic exists. Kept for backward compatibility
+  // with existing callers that only ever see TZS.
   totalAmount: string;
   totalRefunded: string;
   byMethod: Record<PaymentMethod, { count: number; totalAmount: string }>;
+  byCurrency: Record<string, { count: number; totalAmount: string; totalRefunded: string }>;
 }
 
 @Injectable()
@@ -57,7 +67,9 @@ export class PaymentsService {
     private readonly paymentsRepo: Repository<Payment>,
     @InjectRepository(Shipment)
     private readonly shipmentsRepo: Repository<Shipment>,
-    private readonly mpesaProvider: MpesaProvider,
+    private readonly mpesaTanzaniaProvider: MpesaTanzaniaProvider,
+    private readonly mpesaKenyaProvider: MpesaKenyaProvider,
+    private readonly mtnMomoProvider: MtnMomoProvider,
     private readonly stripeProvider: StripeProvider,
     private readonly configService: ConfigService,
     private readonly shipmentsService: ShipmentsService,
@@ -77,6 +89,17 @@ export class PaymentsService {
       throw new BadRequestException('Shipment has not been priced yet');
     }
 
+    // Validated BEFORE the payment row is created, not inside the
+    // provider try/catch below — an unsupported method/currency
+    // combination (e.g. MPESA against a UGX shipment) is a real request
+    // error (400), not a provider failure (502). Catching it here keeps
+    // that distinction instead of the caller seeing a misleading
+    // "provider failed to initiate payment" for something that was never
+    // going to reach a provider at all.
+    if (dto.method === PaymentMethod.MPESA || dto.method === PaymentMethod.MOBILE_MONEY) {
+      this.resolveMobileMoneyProvider(dto.method, shipment.currency);
+    }
+
     const existing = await this.paymentsRepo.findOne({
       where: { shipmentId: shipment.id, status: In(OPEN_PAYMENT_STATUSES) },
     });
@@ -92,6 +115,7 @@ export class PaymentsService {
         customerId,
         method: dto.method,
         status: PaymentStatus.PENDING,
+        currency: shipment.currency,
         amount: shipment.price,
         provider: dto.method,
       }),
@@ -99,23 +123,19 @@ export class PaymentsService {
 
     if (dto.method === PaymentMethod.CASH) {
       payment.status = PaymentStatus.PENDING_CASH_COLLECTION;
-      // Cash is accepted as a payment method at checkout time — the
-      // actual cash changes hands on delivery (see confirmCashCollection
-      // below) — but the shipment itself needs to open up to riders
-      // immediately, same as a successful M-Pesa/Stripe payment does.
-      // Same one-transaction pattern as the webhook handlers below.
-      return this.dataSource.transaction(async (manager) => {
-        const saved = await manager.save(Payment, payment);
-        await this.shipmentsService.confirmAfterPayment(payment.shipmentId, manager);
-        return saved;
-      });
+      return this.paymentsRepo.save(payment);
     }
 
     try {
       const result = await this.callProviderInitiate(dto, payment);
       payment.status = PaymentStatus.PROCESSING;
       payment.externalId = result.transactionId;
-      return await this.paymentsRepo.save(payment);
+      const saved = await this.paymentsRepo.save(payment);
+      // Set after save (see the field's own comment on Payment) so it
+      // rides along on the response without ever being written to the
+      // payments table.
+      saved.isMock = result.isMock;
+      return saved;
     } catch (err) {
       payment.status = PaymentStatus.FAILED;
       payment.errorMessage = err instanceof Error ? err.message : 'Provider error';
@@ -466,12 +486,14 @@ export class PaymentsService {
 
     const byMethod: ReconciliationReport['byMethod'] = {
       [PaymentMethod.MPESA]: { count: 0, totalAmount: '0.00' },
+      [PaymentMethod.MOBILE_MONEY]: { count: 0, totalAmount: '0.00' },
       [PaymentMethod.STRIPE]: { count: 0, totalAmount: '0.00' },
       [PaymentMethod.CASH]: { count: 0, totalAmount: '0.00' },
     };
 
     let totalCents = 0;
     let totalRefundedCents = 0;
+    const byCurrency: ReconciliationReport['byCurrency'] = {};
 
     for (const payment of payments) {
       totalCents += centsFromDecimal(payment.amount);
@@ -482,6 +504,19 @@ export class PaymentsService {
       bucket.totalAmount = decimalFromCents(
         centsFromDecimal(bucket.totalAmount) + centsFromDecimal(payment.amount),
       );
+
+      const currencyBucket = (byCurrency[payment.currency] ??= {
+        count: 0,
+        totalAmount: '0.00',
+        totalRefunded: '0.00',
+      });
+      currencyBucket.count += 1;
+      currencyBucket.totalAmount = decimalFromCents(
+        centsFromDecimal(currencyBucket.totalAmount) + centsFromDecimal(payment.amount),
+      );
+      currencyBucket.totalRefunded = decimalFromCents(
+        centsFromDecimal(currencyBucket.totalRefunded) + centsFromDecimal(payment.refundedAmount),
+      );
     }
 
     return {
@@ -490,21 +525,71 @@ export class PaymentsService {
       totalAmount: decimalFromCents(totalCents),
       totalRefunded: decimalFromCents(totalRefundedCents),
       byMethod,
+      byCurrency,
     };
   }
 
   private async callProviderInitiate(dto: InitiatePaymentDto, payment: Payment) {
-    if (dto.method === PaymentMethod.MPESA) {
-      return this.mpesaProvider.initiate(dto.phoneNumber!, payment.amount, payment.shipmentId);
+    if (dto.method === PaymentMethod.MPESA || dto.method === PaymentMethod.MOBILE_MONEY) {
+      const provider = this.resolveMobileMoneyProvider(dto.method, payment.currency);
+      return provider.initiate(
+        dto.phoneNumber!,
+        payment.amount,
+        payment.shipmentId,
+        payment.currency,
+      );
     }
-    return this.stripeProvider.initiate(payment.customerId, payment.amount, dto.cardToken!);
+    return this.stripeProvider.initiate(
+      payment.customerId,
+      payment.amount,
+      dto.cardToken!,
+      payment.currency,
+    );
   }
 
   private async callProviderRefund(payment: Payment, amount: string) {
-    if (payment.method === PaymentMethod.MPESA) {
-      return this.mpesaProvider.refund(payment.externalId!, amount);
+    if (payment.method === PaymentMethod.MPESA || payment.method === PaymentMethod.MOBILE_MONEY) {
+      const provider = this.resolveMobileMoneyProvider(payment.method, payment.currency);
+      return provider.refund(payment.externalId!, amount, payment.currency);
     }
-    return this.stripeProvider.refund(payment.externalId!, amount);
+    return this.stripeProvider.refund(payment.externalId!, amount, payment.currency);
+  }
+
+  // Picks the correct mobile-money provider for a (method, currency)
+  // pair. MPESA and MOBILE_MONEY are both umbrella methods that cover
+  // more than one actual telco integration underneath — see the
+  // class-level comments on MpesaTanzaniaProvider, MpesaKenyaProvider,
+  // and MtnMomoProvider for why each currency needs its own provider
+  // instance and credential set rather than one shared class. Throws
+  // BadRequestException (not a provider-level Error) for a combination
+  // no provider covers, since that's a request-shape problem the caller
+  // can fix (wrong method for this shipment's currency), not something
+  // any provider call could ever succeed at.
+  private resolveMobileMoneyProvider(
+    method: PaymentMethod.MPESA | PaymentMethod.MOBILE_MONEY,
+    currency: SupportedCurrency,
+  ): MpesaTanzaniaProvider | MpesaKenyaProvider | MtnMomoProvider {
+    if (method === PaymentMethod.MPESA) {
+      if (currency === SupportedCurrency.TZS) {
+        return this.mpesaTanzaniaProvider;
+      }
+      if (currency === SupportedCurrency.KES) {
+        return this.mpesaKenyaProvider;
+      }
+      throw new BadRequestException(
+        `MPESA is only available for TZS and KES shipments, not ${currency}. ` +
+          `Use MOBILE_MONEY for UGX/RWF.`,
+      );
+    }
+
+    // MOBILE_MONEY
+    if (currency === SupportedCurrency.UGX || currency === SupportedCurrency.RWF) {
+      return this.mtnMomoProvider;
+    }
+    throw new BadRequestException(
+      `MOBILE_MONEY is only available for UGX and RWF shipments, not ${currency}. ` +
+        `Use MPESA for TZS/KES.`,
+    );
   }
 
   private async findByIdOrThrow(id: string): Promise<Payment> {

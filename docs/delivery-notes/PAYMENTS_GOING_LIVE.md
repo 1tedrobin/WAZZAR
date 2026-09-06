@@ -5,6 +5,17 @@ is where those comments point. Written 2026-08-22, alongside making the
 payments module actually able to use real Stripe/M-Pesa credentials
 instead of only ever generating fake transaction IDs.
 
+**2026-09-02 update:** this doc originally covered Stripe and the
+single (Tanzania-labeled) M-Pesa provider only. Three more providers
+now exist — Kenya M-Pesa, and MTN Mobile Money for Uganda/Rwanda — with
+their own credential env vars and their own setup steps. See
+`docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md` for those;
+this file is not being restructured to also cover them, to avoid
+churning a doc that existing Stripe/M-Pesa-TZS links already point
+into. **Also see that doc for a real bug found in the section directly
+below** ("Getting M-Pesa (Safaricom Daraja) credentials" — Safaricom
+does not actually operate M-Pesa in Tanzania).
+
 ## Where things stood before this pass
 
 Both providers (`mpesa.provider.ts`, `stripe.provider.ts`) only ever
@@ -51,6 +62,21 @@ going live" below for how to actually confirm it works once you do.
 API call, unlike M-Pesa's (below).
 
 ## Getting M-Pesa (Safaricom Daraja) credentials
+
+⚠ **2026-09-02: this section describes Safaricom's Kenya API, and this
+provider (`mpesa.provider.ts`) is documented/labeled elsewhere in this
+codebase as Tanzania's integration.** Those two things are in tension —
+see `docs/delivery-notes/PHASE4_REGIONAL_PAYMENT_PROVIDERS.md` for the
+full explanation, discovered while building the actual Kenya provider.
+Short version: developer.safaricom.co.ke is Safaricom's own portal, and
+Safaricom operates M-Pesa in Kenya, not Tanzania — Vodacom Tanzania runs
+M-Pesa there, via a different API this codebase has never actually
+integrated with. Registering "as a Tanzanian business" with Safaricom
+(step 4 below) isn't a real path to a working Tanzania M-Pesa
+integration. Follow this section for **Kenya** (`MPESA_KE_*` env vars,
+see the new doc) — treat the existing `MPESA_*` vars and this
+provider's "Tanzania" framing as unverified until someone does the
+equivalent research against Vodacom Tanzania's actual API.
 
 1. Register at developer.safaricom.co.ke, create an app in the Daraja
    portal. This gives you a **Consumer Key** and **Consumer Secret**

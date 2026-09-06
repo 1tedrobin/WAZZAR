@@ -4,6 +4,7 @@ import { ProofOfDelivery } from '../../database/entities/proof-of-delivery.entit
 import { Rider } from '../../database/entities/rider.entity';
 import { Shipment } from '../../database/entities/shipment.entity';
 import { ShipmentStatusHistory } from '../../database/entities/shipment-status-history.entity';
+import { User } from '../../database/entities/user.entity';
 import { PricingModule } from '../pricing/pricing.module';
 import { ShipmentsController } from './shipments.controller';
 import { ShipmentsService } from './shipments.service';
@@ -14,12 +15,16 @@ import { ShipmentsService } from './shipments.service';
   // "is this rider ACTIVE + online?" directly — see assertCanAccess() and
   // assign() in shipments.service.ts. ProofOfDelivery backs
   // submitProofOfDelivery()/getProofOfDelivery() — see Piece 8 in the README.
+  // User is registered (read-only lookup, no UsersModule import) so
+  // create() can read the requesting customer's countryCode and default
+  // an omitted shipment currency to their registered market — see
+  // src/common/market.ts and the comment in create().
   // PricingModule is imported (not TypeOrmModule.forFeature'd) since
   // ShipmentsService only needs PricingService.calculatePrice(), not
   // direct repository access to PricingConfig — see create() in
   // shipments.service.ts (Piece 11 in the README).
   imports: [
-    TypeOrmModule.forFeature([Shipment, Rider, ShipmentStatusHistory, ProofOfDelivery]),
+    TypeOrmModule.forFeature([Shipment, Rider, ShipmentStatusHistory, ProofOfDelivery, User]),
     PricingModule,
   ],
   controllers: [ShipmentsController],

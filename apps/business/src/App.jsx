@@ -23,6 +23,13 @@
        module). A backend cron job (not this app) turns due schedules
        into real shipments automatically, once a minute — this app only
        ever does CRUD on the schedule definition, never "runs" one.
+     - API keys (Phase 3 — "API subscriptions") = real credentials via
+       /business/api-keys (see backend's business-api-keys +
+       public-api modules), letting this business call a small public
+       API surface (create/list/get shipments, read tracking) directly
+       with an X-API-Key header instead of only through this app. The
+       full key is shown exactly once, right after generation — the
+       backend never returns it again, only the non-secret prefix.
 
    NOT wired — the backend has no supporting tables/endpoints for this yet.
    Still renders with the original mock data so nothing regresses, but is
@@ -37,7 +44,7 @@ import React, { useState, useEffect, lazy, Suspense } from "react";
 import {
   Search, ChevronRight, Check, CheckCircle2, Package, TrendingUp, Clock, Download,
   LayoutDashboard, Users, Calendar, UserCog, Receipt, Settings, Menu, Bell, Plus, X,
-  LogOut, Loader2, AlertTriangle,
+  LogOut, Loader2, AlertTriangle, KeyRound, Copy, Eye, EyeOff, MapPin, Star, Upload,
 } from "lucide-react";
 import * as api from "./api";
 
@@ -47,6 +54,9 @@ import * as api from "./api";
 // calls preloadDeliveriesChart() on login rather than leaving it fully cold.
 const DeliveriesChart = lazy(() => import("./DeliveriesChart"));
 const preloadDeliveriesChart = () => import("./DeliveriesChart");
+// Not preloaded on login like DeliveriesChart — Analytics isn't the
+// default landing page, so this only fetches when actually opened.
+const AnalyticsTrendChart = lazy(() => import("./AnalyticsCharts").then((m) => ({ default: m.AnalyticsTrendChart })));
 
 const COLORS = {
   ink: "#10221C",
@@ -150,6 +160,8 @@ const NAV = [
   { id: "scheduled", label: "Scheduled", icon: Calendar },
   { id: "staff", label: "Staff", icon: UserCog },
   { id: "billing", label: "Billing", icon: Receipt },
+  { id: "analytics", label: "Analytics", icon: TrendingUp },
+  { id: "api", label: "API keys", icon: KeyRound },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -373,6 +385,7 @@ const PILL_STYLES = {
   Refunded: { bg: COLORS.paperDim, text: COLORS.inkFaint },
   "Partially Refunded": { bg: COLORS.amberSoft, text: COLORS.amberDeep },
   "Awaiting Cash": { bg: COLORS.amberSoft, text: COLORS.amberDeep },
+  Revoked: { bg: COLORS.coralSoft, text: COLORS.coral },
 };
 
 function Pill({ status }) {
@@ -725,9 +738,95 @@ function OverviewPage({ orders, stats, chartData, loading, error, onNewDelivery,
   );
 }
 
-function OrdersPage({ orders, loading, error, onNewDelivery, onOpenOrder }) {
+function BulkSendModal({ onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+  const [templateDownloading, setTemplateDownloading] = useState(false);
+
+  const downloadTemplate = async () => {
+    setTemplateDownloading(true);
+    try {
+      await api.downloadBulkShipmentsTemplate();
+    } catch (err) {
+      setError(err.message || "Couldn't download the template");
+    } finally {
+      setTemplateDownloading(false);
+    }
+  };
+
+  const submit = async () => {
+    if (!file || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const uploaded = await api.uploadBulkShipments(file);
+      setResult(uploaded);
+      if (uploaded.created.length > 0) onImported();
+    } catch (err) {
+      setError(err.message || "Couldn't import this file");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (result) {
+    return (
+      <Modal title="Import results" onClose={onClose} wide>
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3">
+            <div className="flex-1 rounded-xl p-3 text-center" style={{ backgroundColor: COLORS.tealSoft }}>
+              <p className="text-lg font-extrabold" style={{ color: COLORS.teal }}>{result.created.length}</p>
+              <p className="text-xs font-bold" style={{ color: COLORS.teal }}>created</p>
+            </div>
+            <div className="flex-1 rounded-xl p-3 text-center" style={{ backgroundColor: result.failed.length ? COLORS.coralSoft : COLORS.paperDim }}>
+              <p className="text-lg font-extrabold" style={{ color: result.failed.length ? COLORS.coral : COLORS.inkFaint }}>{result.failed.length}</p>
+              <p className="text-xs font-bold" style={{ color: result.failed.length ? COLORS.coral : COLORS.inkFaint }}>failed</p>
+            </div>
+          </div>
+          {result.failed.length > 0 && (
+            <div className="rounded-xl p-3 max-h-48 overflow-y-auto" style={{ backgroundColor: COLORS.paperDim }}>
+              {result.failed.map((f) => (
+                <p key={f.row} className="text-xs font-semibold mb-1" style={{ color: COLORS.inkFaint }}>
+                  Row {f.row}: {f.error}
+                </p>
+              ))}
+            </div>
+          )}
+          <button onClick={onClose} className="rounded-xl px-4 py-3 text-sm font-bold" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>Done</button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Bulk send (CSV)" onClose={onClose} wide>
+      <div className="flex flex-col gap-3">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>
+          Upload a CSV of pickup/dropoff rows to create many real deliveries at once. Rows without lat/lng columns get their address looked up automatically, which is slower — for larger files, filling in coordinates yourself is faster. Up to 100 rows per upload.
+        </p>
+        <button onClick={downloadTemplate} disabled={templateDownloading} className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 self-start" style={{ backgroundColor: COLORS.paperDim }}>
+          <Download size={14} color={COLORS.ink} />
+          <span className="text-xs font-bold" style={{ color: COLORS.ink }}>{templateDownloading ? "Downloading…" : "Download CSV template"}</span>
+        </button>
+        <label className="rounded-xl px-4 py-6 text-center cursor-pointer" style={{ backgroundColor: COLORS.paperDim, border: `1px dashed ${COLORS.inkFaint}` }}>
+          <input type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
+          <p className="text-sm font-bold" style={{ color: COLORS.ink }}>{file ? file.name : "Choose a .csv file"}</p>
+        </label>
+        {error && <p className="text-xs font-bold" style={{ color: COLORS.coral }}>{error}</p>}
+        <button onClick={submit} disabled={!file || submitting} className="rounded-xl px-4 py-3 text-sm font-bold flex items-center justify-center gap-2" style={{ backgroundColor: file && !submitting ? COLORS.teal : COLORS.paperDim, color: file && !submitting ? COLORS.paper : COLORS.inkFaint }}>
+          {submitting ? <><Loader2 size={16} className="animate-spin" /> Importing — this can take a minute for larger files…</> : "Import"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function OrdersPage({ orders, loading, error, onNewDelivery, onOpenOrder, onBulkImported }) {
   const [filter, setFilter] = useState("All");
   const [query, setQuery] = useState("");
+  const [showBulkModal, setShowBulkModal] = useState(false);
   const filters = ["All", "Awaiting Payment", "Active", "Delivered", "Cancelled"];
   const filtered = orders.filter(
     (o) => (filter === "All" || o.stage === filter) && (o.recipient.toLowerCase().includes(query.toLowerCase()) || o.id.toLowerCase().includes(query.toLowerCase()))
@@ -739,10 +838,16 @@ function OrdersPage({ orders, loading, error, onNewDelivery, onOpenOrder }) {
           <Search size={15} color={COLORS.inkFaint} />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by order or recipient" className="flex-1 bg-transparent outline-none text-sm" style={{ color: COLORS.ink }} />
         </div>
-        <button onClick={onNewDelivery} className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 flex-shrink-0" style={{ backgroundColor: COLORS.teal }}>
-          <Plus size={15} color={COLORS.paper} />
-          <span className="text-sm font-bold" style={{ color: COLORS.paper }}>New delivery</span>
-        </button>
+        <div className="flex gap-2 flex-shrink-0">
+          <button onClick={() => setShowBulkModal(true)} className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5" style={{ backgroundColor: COLORS.paperDim }}>
+            <Upload size={15} color={COLORS.ink} />
+            <span className="text-sm font-bold" style={{ color: COLORS.ink }}>Bulk send</span>
+          </button>
+          <button onClick={onNewDelivery} className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5" style={{ backgroundColor: COLORS.teal }}>
+            <Plus size={15} color={COLORS.paper} />
+            <span className="text-sm font-bold" style={{ color: COLORS.paper }}>New delivery</span>
+          </button>
+        </div>
       </div>
       <div className="flex gap-2 mb-4 overflow-x-auto">
         {filters.map((f) => (
@@ -757,6 +862,7 @@ function OrdersPage({ orders, loading, error, onNewDelivery, onOpenOrder }) {
       ) : (
         <DataTable columns={ORDER_COLUMNS} rows={filtered} onRowClick={onOpenOrder} />
       )}
+      {showBulkModal && <BulkSendModal onClose={() => setShowBulkModal(false)} onImported={onBulkImported} />}
     </div>
   );
 }
@@ -1130,6 +1236,200 @@ function StaffPage({ staff, loading, error, onAdd, onToggleActive, onRemove }) {
   );
 }
 
+const API_SCOPES = [
+  { value: "shipments:write", label: "Create shipments", hint: "POST /v1/api/shipments" },
+  { value: "shipments:read", label: "Read shipments", hint: "GET /v1/api/shipments" },
+  { value: "tracking:read", label: "Read tracking", hint: "GET /v1/api/shipments/:id/tracking" },
+];
+
+function ScopeChips({ scopes }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {scopes.map((s) => (
+        <span key={s} className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: COLORS.paperDim, color: COLORS.inkFaint }}>
+          {s}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Shows a plaintext API key exactly once (right after creation) with a
+// copy button — the backend never returns the full key again after
+// this, only the non-secret prefix (see api.createApiKey's comment).
+function RevealedKeyBox({ apiKey }) {
+  const [copied, setCopied] = useState(false);
+  const [visible, setVisible] = useState(true);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(apiKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API can fail (permissions, non-secure context) —
+      // the key is still selectable/visible in the box either way.
+    }
+  };
+
+  return (
+    <div className="rounded-xl p-3" style={{ backgroundColor: COLORS.inkSoft }}>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 text-xs font-mono break-all" style={{ color: COLORS.paper }}>
+          {visible ? apiKey : "•".repeat(24)}
+        </code>
+        <button onClick={() => setVisible((v) => !v)} className="flex-shrink-0" title={visible ? "Hide" : "Show"}>
+          {visible ? <EyeOff size={15} color={COLORS.paper} style={{ opacity: 0.7 }} /> : <Eye size={15} color={COLORS.paper} style={{ opacity: 0.7 }} />}
+        </button>
+        <button onClick={copy} className="flex-shrink-0" title="Copy">
+          <Copy size={15} color={COLORS.paper} style={{ opacity: 0.7 }} />
+        </button>
+      </div>
+      {copied && <p className="text-xs font-bold mt-1" style={{ color: COLORS.teal }}>Copied</p>}
+    </div>
+  );
+}
+
+function GenerateApiKeyModal({ onClose, onCreated }) {
+  const [name, setName] = useState("");
+  const [scopes, setScopes] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState(null);
+
+  const toggleScope = (value) => {
+    setScopes((prev) => (prev.includes(value) ? prev.filter((s) => s !== value) : [...prev, value]));
+  };
+
+  const canSubmit = name.trim() && scopes.length > 0 && !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const result = await api.createApiKey({ name: name.trim(), scopes });
+      onCreated(result);
+      setCreated(result);
+    } catch (err) {
+      setError(err.message || "Couldn't generate a key");
+      setSubmitting(false);
+    }
+  };
+
+  if (created) {
+    return (
+      <Modal title="Key generated" onClose={onClose}>
+        <div className="flex flex-col gap-3">
+          <p className="text-xs font-semibold" style={{ color: COLORS.coral }}>
+            Copy this now — WAZZAR won't show the full key again. If you lose it, revoke it and generate a new one.
+          </p>
+          <RevealedKeyBox apiKey={created.key} />
+          <button onClick={onClose} className="rounded-xl px-4 py-3 text-sm font-bold" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>
+            Done
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Generate API key" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>
+          Use this key to call WAZZAR's public API directly — from a warehouse system, a website checkout, or a tool like Zapier — instead of only through this dashboard.
+        </p>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Key name (e.g. Warehouse integration)" className="rounded-xl px-4 py-3 text-sm font-semibold outline-none" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+        <div className="flex flex-col gap-2">
+          {API_SCOPES.map((s) => {
+            const checked = scopes.includes(s.value);
+            return (
+              <button key={s.value} onClick={() => toggleScope(s.value)} className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-left" style={{ backgroundColor: checked ? COLORS.tealSoft : COLORS.paperDim }}>
+                <div className="rounded flex items-center justify-center flex-shrink-0" style={{ width: 18, height: 18, backgroundColor: checked ? COLORS.teal : COLORS.paper, border: `1px solid ${checked ? COLORS.teal : COLORS.inkFaint}` }}>
+                  {checked && <Check size={13} color={COLORS.paper} />}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold" style={{ color: COLORS.ink }}>{s.label}</p>
+                  <p className="text-xs font-mono truncate" style={{ color: COLORS.inkFaint }}>{s.hint}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {error && <p className="text-xs font-bold" style={{ color: COLORS.coral }}>{error}</p>}
+        <button onClick={submit} disabled={!canSubmit} className="rounded-xl px-4 py-3 text-sm font-bold flex items-center justify-center gap-2" style={{ backgroundColor: canSubmit ? COLORS.teal : COLORS.paperDim, color: canSubmit ? COLORS.paper : COLORS.inkFaint }}>
+          {submitting ? <Loader2 size={16} className="animate-spin" /> : "Generate key"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function ApiKeysPage({ apiKeys, loading, error, onCreated, onRevoke }) {
+  const [showModal, setShowModal] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  const handleRevoke = async (id) => {
+    setBusyId(id);
+    try {
+      await onRevoke(id);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const cols = [
+    { key: "name", label: "Name" },
+    { key: "keyPrefix", label: "Key", render: (r) => <code className="text-xs font-mono">{r.keyPrefix}…</code> },
+    { key: "scopes", label: "Scopes", render: (r) => <ScopeChips scopes={r.scopes} /> },
+    { key: "status", label: "Status", render: (r) => <Pill status={r.status === "ACTIVE" ? "Active" : "Revoked"} /> },
+    { key: "lastUsedAt", label: "Last used", render: (r) => (r.lastUsedAt ? new Date(r.lastUsedAt).toLocaleDateString() : "Never") },
+    {
+      key: "actions",
+      label: "",
+      render: (r) =>
+        r.status === "ACTIVE" ? (
+          <button onClick={(e) => { e.stopPropagation(); handleRevoke(r.id); }} disabled={busyId === r.id} className="text-xs font-bold" style={{ color: COLORS.coral }}>
+            {busyId === r.id ? "…" : "Revoke"}
+          </button>
+        ) : null,
+    },
+  ];
+
+  return (
+    <div>
+      <DemoBanner>
+        Keys let outside systems create and read shipments directly through WAZZAR's public API, without logging into this dashboard. The full key is shown once, right after you generate it — copy it then.
+      </DemoBanner>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm font-extrabold" style={{ color: COLORS.ink }}>{apiKeys.length} API keys</p>
+        <button onClick={() => setShowModal(true)} className="flex items-center gap-2 rounded-xl px-4 py-2.5" style={{ backgroundColor: COLORS.teal }}>
+          <Plus size={15} color={COLORS.paper} />
+          <span className="text-sm font-bold" style={{ color: COLORS.paper }}>Generate key</span>
+        </button>
+      </div>
+      {error && (
+        <div className="rounded-xl px-4 py-3 mb-4 text-sm font-semibold" style={{ backgroundColor: COLORS.coralSoft, color: COLORS.coral }}>
+          {error}
+        </div>
+      )}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 size={24} className="animate-spin" style={{ color: COLORS.teal }} />
+        </div>
+      ) : apiKeys.length === 0 ? (
+        <div className="rounded-2xl p-8 text-center" style={{ backgroundColor: COLORS.paper, border: `1px solid ${COLORS.paperDim}` }}>
+          <KeyRound size={22} color={COLORS.inkFaint} className="mx-auto mb-2" />
+          <p className="text-sm font-semibold" style={{ color: COLORS.inkFaint }}>No API keys yet. Generate one to start calling WAZZAR's public API.</p>
+        </div>
+      ) : (
+        <DataTable columns={cols} rows={apiKeys} />
+      )}
+      {showModal && <GenerateApiKeyModal onClose={() => setShowModal(false)} onCreated={onCreated} />}
+    </div>
+  );
+}
+
 // Builds and downloads a CSV of the calling business's own real payment
 // history, entirely client-side from data already fetched via
 // GET /payments/history — no backend export endpoint exists (or is
@@ -1155,7 +1455,138 @@ function downloadPaymentHistoryCsv(payments) {
   URL.revokeObjectURL(url);
 }
 
-function BillingPage({ payments, loading, error }) {
+// Defaults the date range to "this calendar month so far" — the most
+// common thing a business generating an invoice mid-month wants,
+// while both fields stay freely editable for any other range.
+function currentMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const toIso = (d) => d.toISOString().slice(0, 10);
+  return { start: toIso(start), end: toIso(now) };
+}
+
+function GenerateInvoiceModal({ onClose, onCreated }) {
+  const defaults = currentMonthRange();
+  const [periodStart, setPeriodStart] = useState(defaults.start);
+  const [periodEnd, setPeriodEnd] = useState(defaults.end);
+  const [taxRatePercent, setTaxRatePercent] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const canSubmit = periodStart && periodEnd && periodStart <= periodEnd && !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const created = await api.generateInvoice({
+        periodStart,
+        periodEnd,
+        taxRatePercent: taxRatePercent === "" ? undefined : Number(taxRatePercent),
+      });
+      onCreated(created);
+      onClose();
+    } catch (err) {
+      setError(err.message || "Couldn't generate an invoice");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Generate invoice" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>
+          Folds every completed, not-yet-invoiced payment in this date range into one statement — a real record for your accountant or a client, not just the raw payment list.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: COLORS.inkFaint }}>From</label>
+            <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} className="rounded-xl px-3 py-2.5 text-sm font-semibold outline-none w-full" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: COLORS.inkFaint }}>To</label>
+            <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} className="rounded-xl px-3 py-2.5 text-sm font-semibold outline-none w-full" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: COLORS.inkFaint }}>Tax rate % (optional)</label>
+          <input type="number" min="0" max="100" step="0.01" value={taxRatePercent} onChange={(e) => setTaxRatePercent(e.target.value)} placeholder="e.g. 18 for VAT" className="rounded-xl px-4 py-3 text-sm font-semibold outline-none w-full" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+        </div>
+        {error && <p className="text-xs font-bold" style={{ color: COLORS.coral }}>{error}</p>}
+        <button onClick={submit} disabled={!canSubmit} className="rounded-xl px-4 py-3 text-sm font-bold flex items-center justify-center gap-2" style={{ backgroundColor: canSubmit ? COLORS.teal : COLORS.paperDim, color: canSubmit ? COLORS.paper : COLORS.inkFaint }}>
+          {submitting ? <Loader2 size={16} className="animate-spin" /> : "Generate invoice"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function InvoicesSection({ invoices, loading, error, onCreated }) {
+  const [showModal, setShowModal] = useState(false);
+  const [downloadingId, setDownloadingId] = useState(null);
+  const [downloadError, setDownloadError] = useState(null);
+
+  const handleDownload = async (invoice) => {
+    setDownloadingId(invoice.id);
+    setDownloadError(null);
+    try {
+      await api.downloadInvoicePdf(invoice.id, `${invoice.invoiceNumber}.pdf`);
+    } catch (err) {
+      setDownloadError(err.message || "Couldn't download this invoice");
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const cols = [
+    { key: "invoiceNumber", label: "Invoice #" },
+    { key: "period", label: "Period", render: (r) => `${r.periodStart} → ${r.periodEnd}` },
+    { key: "shipmentCount", label: "Deliveries" },
+    { key: "totalAmount", label: "Total", render: (r) => `${fmtTZS(r.totalAmount)}${Number(r.taxAmount) > 0 ? ` (incl. tax)` : ""}` },
+    {
+      key: "actions",
+      label: "",
+      render: (r) => (
+        <button onClick={(e) => { e.stopPropagation(); handleDownload(r); }} disabled={downloadingId === r.id} className="flex items-center gap-1.5 text-xs font-bold" style={{ color: COLORS.teal }}>
+          {downloadingId === r.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} PDF
+        </button>
+      ),
+    },
+  ];
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-extrabold" style={{ color: COLORS.ink }}>Invoices</p>
+        <button onClick={() => setShowModal(true)} className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: COLORS.teal }}>
+          <Plus size={13} color={COLORS.paper} />
+          <span className="text-xs font-bold" style={{ color: COLORS.paper }}>Generate invoice</span>
+        </button>
+      </div>
+      {(error || downloadError) && (
+        <div className="rounded-xl px-4 py-3 mb-4 text-sm font-semibold" style={{ backgroundColor: COLORS.coralSoft, color: COLORS.coral }}>
+          {error || downloadError}
+        </div>
+      )}
+      {loading ? (
+        <div className="flex items-center justify-center py-10">
+          <Loader2 size={22} className="animate-spin" style={{ color: COLORS.teal }} />
+        </div>
+      ) : invoices.length === 0 ? (
+        <div className="rounded-2xl p-6 text-center" style={{ backgroundColor: COLORS.paper, border: `1px solid ${COLORS.paperDim}` }}>
+          <Receipt size={20} color={COLORS.inkFaint} className="mx-auto mb-2" />
+          <p className="text-sm font-semibold" style={{ color: COLORS.inkFaint }}>No invoices yet. Generate one from a date range of completed payments.</p>
+        </div>
+      ) : (
+        <DataTable columns={cols} rows={invoices} />
+      )}
+      {showModal && <GenerateInvoiceModal onClose={() => setShowModal(false)} onCreated={onCreated} />}
+    </div>
+  );
+}
+
+function BillingPage({ payments, loading, error, invoices, invoicesLoading, invoicesError, onInvoiceGenerated }) {
   const completed = payments.filter((p) => p.status === "COMPLETED");
   const now = new Date();
   const paidThisMonth = completed
@@ -1184,7 +1615,7 @@ function BillingPage({ payments, loading, error }) {
   return (
     <div>
       <div className="rounded-xl px-4 py-3 mb-6 text-sm font-semibold" style={{ backgroundColor: COLORS.tealSoft, color: COLORS.teal }}>
-        WAZZAR charges per delivery, not as a monthly subscription — every row below is a real payment tied to a real delivery (see Orders), not an invoice on a plan.
+        WAZZAR charges per delivery, not as a monthly subscription — every row below is a real payment tied to a real delivery (see Orders). Generate a real invoice/statement over a date range below when you need one for your own books or a client.
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="rounded-2xl p-5" style={{ backgroundColor: COLORS.ink }}>
@@ -1224,6 +1655,142 @@ function BillingPage({ payments, loading, error }) {
       ) : (
         <DataTable columns={cols} rows={payments} />
       )}
+      <InvoicesSection invoices={invoices} loading={invoicesLoading} error={invoicesError} onCreated={onInvoiceGenerated} />
+    </div>
+  );
+}
+
+function defaultAnalyticsRange() {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - 29);
+  const toIso = (d) => d.toISOString().slice(0, 10);
+  return { start: toIso(start), end: toIso(end) };
+}
+
+function AnalyticsPage() {
+  const defaults = defaultAnalyticsRange();
+  const [periodStart, setPeriodStart] = useState(defaults.start);
+  const [periodEnd, setPeriodEnd] = useState(defaults.end);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = (start, end) => {
+    setLoading(true);
+    setError(null);
+    api.getAnalyticsSummary({ periodStart: start, periodEnd: end })
+      .then(setSummary)
+      .catch((err) => setError(err.message || "Couldn't load analytics"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(periodStart, periodEnd); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyRange = () => load(periodStart, periodEnd);
+  const resetRange = () => {
+    const d = defaultAnalyticsRange();
+    setPeriodStart(d.start);
+    setPeriodEnd(d.end);
+    load(d.start, d.end);
+  };
+
+  const maxDestinationCount = summary?.topDestinations?.[0]?.count || 1;
+  const maxStatusCount = summary?.statusBreakdown?.[0]?.count || 1;
+
+  return (
+    <div>
+      <DemoBanner>
+        Computed from your full shipment history in this range via a real backend aggregation — not limited to whatever page of orders happens to be loaded on the Orders tab.
+      </DemoBanner>
+
+      <div className="flex flex-wrap items-end gap-2 mb-5">
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: COLORS.inkFaint }}>From</label>
+          <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} className="rounded-xl px-3 py-2 text-sm font-semibold outline-none" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: COLORS.inkFaint }}>To</label>
+          <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} className="rounded-xl px-3 py-2 text-sm font-semibold outline-none" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }} />
+        </div>
+        <button onClick={applyRange} disabled={!periodStart || !periodEnd || periodStart > periodEnd} className="rounded-xl px-4 py-2 text-sm font-bold" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>Apply</button>
+        <button onClick={resetRange} className="rounded-xl px-4 py-2 text-sm font-bold" style={{ backgroundColor: COLORS.paperDim, color: COLORS.inkFaint }}>Last 30 days</button>
+      </div>
+
+      {error && (
+        <div className="rounded-xl px-4 py-3 mb-4 text-sm font-semibold" style={{ backgroundColor: COLORS.coralSoft, color: COLORS.coral }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 size={24} className="animate-spin" style={{ color: COLORS.teal }} />
+        </div>
+      ) : summary ? (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+            <StatCard icon={Package} label="Deliveries" value={summary.totals.shipments} />
+            <StatCard icon={CheckCircle2} label="Completion rate" value={summary.totals.completionRate != null ? `${summary.totals.completionRate}%` : "—"} />
+            <StatCard icon={TrendingUp} label="Total spend" value={fmtTZS(summary.totals.totalSpend)} />
+            <StatCard icon={Clock} label="Avg delivery time" value={summary.totals.avgDeliveryMinutes != null ? `${summary.totals.avgDeliveryMinutes} min` : "—"} />
+            <StatCard icon={Star} label="Avg rider rating" value={summary.totals.avgRiderRating != null ? summary.totals.avgRiderRating.toFixed(1) : "—"} />
+          </div>
+
+          <div className="rounded-2xl p-5 mb-6" style={{ backgroundColor: COLORS.paper, border: `1px solid ${COLORS.paperDim}` }}>
+            <p className="text-sm font-extrabold mb-4" style={{ color: COLORS.ink }}>Deliveries &amp; spend, {summary.periodStart} to {summary.periodEnd}</p>
+            <Suspense fallback={<div className="flex justify-center py-16"><Loader2 size={20} className="animate-spin" color={COLORS.inkFaint} /></div>}>
+              <AnalyticsTrendChart
+                dailySeries={summary.dailySeries}
+                tealColor={COLORS.teal}
+                coralColor={COLORS.coral}
+                inkFaintColor={COLORS.inkFaint}
+                paperDimColor={COLORS.paperDim}
+                formatTZS={fmtTZS}
+              />
+            </Suspense>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-2xl p-5" style={{ backgroundColor: COLORS.paper, border: `1px solid ${COLORS.paperDim}` }}>
+              <p className="text-sm font-extrabold mb-3" style={{ color: COLORS.ink }}>Status breakdown</p>
+              {summary.statusBreakdown.length === 0 ? (
+                <p className="text-xs font-semibold" style={{ color: COLORS.inkFaint }}>No shipments in this range.</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {summary.statusBreakdown.map((s) => (
+                    <div key={s.status} className="flex items-center gap-2">
+                      <span className="text-xs font-semibold w-32 flex-shrink-0 truncate" style={{ color: COLORS.ink }}>{STATUS_LABELS[s.status] || s.status}</span>
+                      <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ backgroundColor: COLORS.paperDim }}>
+                        <div className="h-2 rounded-full" style={{ width: `${(s.count / maxStatusCount) * 100}%`, backgroundColor: s.status === "CANCELLED" ? COLORS.coral : COLORS.teal }} />
+                      </div>
+                      <span className="text-xs font-bold w-6 text-right flex-shrink-0" style={{ color: COLORS.inkFaint }}>{s.count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl p-5" style={{ backgroundColor: COLORS.paper, border: `1px solid ${COLORS.paperDim}` }}>
+              <p className="text-sm font-extrabold mb-3" style={{ color: COLORS.ink }}>Top destinations</p>
+              {summary.topDestinations.length === 0 ? (
+                <p className="text-xs font-semibold" style={{ color: COLORS.inkFaint }}>No shipments in this range.</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {summary.topDestinations.map((d) => (
+                    <div key={d.area} className="flex items-center gap-2">
+                      <MapPin size={13} color={COLORS.inkFaint} className="flex-shrink-0" />
+                      <span className="text-xs font-semibold flex-1 truncate" style={{ color: COLORS.ink }}>{d.area}</span>
+                      <div className="flex-1 h-2 rounded-full overflow-hidden max-w-[80px]" style={{ backgroundColor: COLORS.paperDim }}>
+                        <div className="h-2 rounded-full" style={{ width: `${(d.count / maxDestinationCount) * 100}%`, backgroundColor: COLORS.teal }} />
+                      </div>
+                      <span className="text-xs font-bold w-6 text-right flex-shrink-0" style={{ color: COLORS.inkFaint }}>{d.count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1564,6 +2131,12 @@ function App() {
   const [payments, setPayments] = useState([]);
   const [paymentsLoading, setPaymentsLoading] = useState(false);
   const [paymentsError, setPaymentsError] = useState(null);
+  const [apiKeys, setApiKeys] = useState([]);
+  const [apiKeysLoading, setApiKeysLoading] = useState(false);
+  const [apiKeysError, setApiKeysError] = useState(null);
+  const [invoices, setInvoices] = useState([]);
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [invoicesError, setInvoicesError] = useState(null);
   const [business, setBusinessState] = useState({ name: "My Business", category: "", address: "", addressCoord: null });
 
   const [newDeliveryOpen, setNewDeliveryOpen] = useState(false);
@@ -1708,6 +2281,40 @@ function App() {
 
   useEffect(() => {
     if (!session?.user?.id) return;
+    setApiKeysLoading(true);
+    setApiKeysError(null);
+    api.listApiKeys()
+      .then(setApiKeys)
+      .catch((err) => setApiKeysError(err.message || "Couldn't load API keys"))
+      .finally(() => setApiKeysLoading(false));
+  }, [session?.user?.id]);
+
+  // The create response includes the plaintext key exactly once —
+  // ApiKeysPage/GenerateApiKeyModal is responsible for displaying it;
+  // this handler just adds the safe (hash-free) fields to the list,
+  // same as every other created row from api.js.
+  const handleApiKeyCreated = (created) => setApiKeys((prev) => [created, ...prev]);
+
+  const handleApiKeyRevoke = (id) => {
+    return api.revokeApiKey(id)
+      .then((updated) => setApiKeys((prev) => prev.map((k) => (k.id === id ? updated : k))))
+      .catch((err) => setApiKeysError(err.message || "Couldn't revoke this key"));
+  };
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    setInvoicesLoading(true);
+    setInvoicesError(null);
+    api.listInvoices()
+      .then(setInvoices)
+      .catch((err) => setInvoicesError(err.message || "Couldn't load invoices"))
+      .finally(() => setInvoicesLoading(false));
+  }, [session?.user?.id]);
+
+  const handleInvoiceGenerated = (created) => setInvoices((prev) => [created, ...prev]);
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
     setScheduledLoading(true);
     setScheduledError(null);
     api.listScheduledDeliveries()
@@ -1752,15 +2359,17 @@ function App() {
   const stats = statsFor(orders);
   const chartData = weeklyChartData(orders);
 
-  const titles = { overview: "Overview", orders: "Orders", customers: "Customers", scheduled: "Scheduled deliveries", staff: "Staff", billing: "Billing", settings: "Settings" };
+  const titles = { overview: "Overview", orders: "Orders", customers: "Customers", scheduled: "Scheduled deliveries", staff: "Staff", billing: "Billing", analytics: "Analytics", api: "API keys", settings: "Settings" };
 
   let pageContent;
   if (page === "overview") pageContent = <OverviewPage orders={orders} stats={stats} chartData={chartData} loading={ordersLoading} error={ordersError} onNewDelivery={() => setNewDeliveryOpen(true)} onOpenOrder={setSelectedOrder} setPage={setPage} />;
-  else if (page === "orders") pageContent = <OrdersPage orders={orders} loading={ordersLoading} error={ordersError} onNewDelivery={() => setNewDeliveryOpen(true)} onOpenOrder={setSelectedOrder} />;
+  else if (page === "orders") pageContent = <OrdersPage orders={orders} loading={ordersLoading} error={ordersError} onNewDelivery={() => setNewDeliveryOpen(true)} onOpenOrder={setSelectedOrder} onBulkImported={refreshOrders} />;
   else if (page === "customers") pageContent = <CustomersPage customers={customers} loading={customersLoading} error={customersError} onAdd={handleCustomerAdded} onDelete={handleCustomerDelete} />;
   else if (page === "scheduled") pageContent = <ScheduledPage scheduled={scheduled} loading={scheduledLoading} error={scheduledError} onAdd={handleScheduleAdded} onToggleActive={handleScheduleToggleActive} onDelete={handleScheduleDelete} business={business} />;
   else if (page === "staff") pageContent = <StaffPage staff={staff} loading={staffLoading} error={staffError} onAdd={handleStaffAdded} onToggleActive={handleStaffToggleActive} onRemove={handleStaffRemove} />;
-  else if (page === "billing") pageContent = <BillingPage payments={payments} loading={paymentsLoading} error={paymentsError} />;
+  else if (page === "billing") pageContent = <BillingPage payments={payments} loading={paymentsLoading} error={paymentsError} invoices={invoices} invoicesLoading={invoicesLoading} invoicesError={invoicesError} onInvoiceGenerated={handleInvoiceGenerated} />;
+  else if (page === "analytics") pageContent = <AnalyticsPage />;
+  else if (page === "api") pageContent = <ApiKeysPage apiKeys={apiKeys} loading={apiKeysLoading} error={apiKeysError} onCreated={handleApiKeyCreated} onRevoke={handleApiKeyRevoke} />;
   else if (page === "settings") pageContent = <SettingsPage business={business} setBusiness={setBusiness} />;
 
   return (

@@ -310,3 +310,125 @@ export function listCustomers(params = {}) {
 export function getCustomer(id) {
   return request(`/admin/customers/${id}`);
 }
+
+/* ------------------------------------------------------------------ */
+/* Phase 2 — Hubs. Reads: ADMIN/SUPER_ADMIN/DISPATCHER. Writes + staff  */
+/* assignment: ADMIN/SUPER_ADMIN only.                                  */
+/* ------------------------------------------------------------------ */
+
+export function listHubs(city) {
+  return request(`/hubs${city ? `?city=${encodeURIComponent(city)}` : ""}`);
+}
+
+export function getHub(id) {
+  return request(`/hubs/${id}`);
+}
+
+export function createHub(dto) {
+  return request("/hubs", { method: "POST", body: dto });
+}
+
+export function updateHub(id, dto) {
+  return request(`/hubs/${id}`, { method: "PATCH", body: dto });
+}
+
+// Assigning requires the target user to already hold the DISPATCHER
+// role (granted out-of-band, same as ADMIN/SUPER_ADMIN — see login's
+// comment) — the backend rejects it otherwise.
+export function listHubStaff(id) {
+  return request(`/hubs/${id}/staff`);
+}
+
+export function assignHubStaff(id, userId) {
+  return request(`/hubs/${id}/staff`, { method: "POST", body: { userId } });
+}
+
+export function removeHubStaff(id, userId) {
+  return request(`/hubs/${id}/staff/${userId}`, { method: "DELETE" });
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2 — Partner Operators. ADMIN/SUPER_ADMIN only.                 */
+/* ------------------------------------------------------------------ */
+
+export function listPartnerOperators() {
+  return request("/partner-operators");
+}
+
+export function getPartnerOperator(id) {
+  return request(`/partner-operators/${id}`);
+}
+
+// Response is { operator, apiKey } — apiKey is the raw key, shown
+// exactly once here. It cannot be retrieved again, only rotated.
+export function createPartnerOperator(dto) {
+  return request("/partner-operators", { method: "POST", body: dto });
+}
+
+export function updatePartnerOperator(id, dto) {
+  return request(`/partner-operators/${id}`, { method: "PATCH", body: dto });
+}
+
+// Same { operator, apiKey } shape as create — the old key stops working
+// the instant this returns.
+export function rotatePartnerOperatorKey(id) {
+  return request(`/partner-operators/${id}/rotate-key`, { method: "POST" });
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2 — Carriers. Reads: ADMIN/SUPER_ADMIN/DISPATCHER. Writes:     */
+/* ADMIN/SUPER_ADMIN only.                                              */
+/* ------------------------------------------------------------------ */
+
+export function listCarriers(partnerOperatorId) {
+  return request(`/carriers${partnerOperatorId ? `?partnerOperatorId=${partnerOperatorId}` : ""}`);
+}
+
+export function getCarrier(id) {
+  return request(`/carriers/${id}`);
+}
+
+export function createCarrier(dto) {
+  return request("/carriers", { method: "POST", body: dto });
+}
+
+export function updateCarrier(id, dto) {
+  return request(`/carriers/${id}`, { method: "PATCH", body: dto });
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2 — Legs. Dispatch page's Intercity section.                   */
+/* Roles: ADMIN, SUPER_ADMIN, DISPATCHER (hub-scoped for DISPATCHER —   */
+/* enforced backend-side, not here).                                    */
+/* ------------------------------------------------------------------ */
+
+// { pendingLocalLegs: Leg[], pendingTrunkLegs: Leg[] }
+export function getPendingLegs() {
+  return request("/legs/pending");
+}
+
+// { activeLocalLegs: Leg[], activeTrunkLegs: Leg[] } — ASSIGNED/IN_PROGRESS
+export function getActiveLegs() {
+  return request("/legs/active");
+}
+
+export function assignLegRider(legId, riderId) {
+  return request(`/legs/${legId}/assign-rider`, { method: "POST", body: { riderId } });
+}
+
+export function assignLegCarrier(legId, carrierId) {
+  return request(`/legs/${legId}/assign-carrier`, { method: "POST", body: { carrierId } });
+}
+
+export function startLeg(legId) {
+  return request(`/legs/${legId}/start`, { method: "POST" });
+}
+
+export function completeLeg(legId) {
+  return request(`/legs/${legId}/complete`, { method: "POST" });
+}
+
+export function cancelLeg(legId) {
+  return request(`/legs/${legId}/cancel`, { method: "POST" });
+}
+

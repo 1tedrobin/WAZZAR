@@ -168,6 +168,28 @@ export function createShipment({ pickupLocation, dropoffLocation, packageWeightK
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 2 — Intercity. Booking flow: list hubs to let the customer     */
+/* pick an origin/destination, then create via planIntercityShipment    */
+/* instead of createShipment above. Response is { shipment, legs } —    */
+/* store `.shipment` the same place a plain createShipment() result     */
+/* would go; `.legs` is there if a "which leg is active" view gets      */
+/* built later (not used by this app yet).                              */
+/* ------------------------------------------------------------------ */
+
+export function listHubs() {
+  return request("/hubs");
+}
+
+export function planIntercityShipment({
+  pickupLocation, dropoffLocation, originHubId, destinationHubId, packageWeightKg, packageDescription,
+}) {
+  return request("/shipments/intercity", {
+    method: "POST",
+    body: { pickupLocation, dropoffLocation, originHubId, destinationHubId, packageWeightKg, packageDescription },
+  });
+}
+
 export function getShipment(id) {
   return request(`/shipments/${id}`);
 }

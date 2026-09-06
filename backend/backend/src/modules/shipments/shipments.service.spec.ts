@@ -12,9 +12,12 @@ import { ProofOfDelivery } from '../../database/entities/proof-of-delivery.entit
 import { Shipment, ShipmentStatus } from '../../database/entities/shipment.entity';
 import { Rider, RiderStatus } from '../../database/entities/rider.entity';
 import { ShipmentStatusHistory } from '../../database/entities/shipment-status-history.entity';
+import { User } from '../../database/entities/user.entity';
 import { Role } from '../../database/entities/user-role.entity';
 import { JwtPayload } from '../auth/jwt-payload.interface';
 import { PricingService } from '../pricing/pricing.service';
+import { DEFAULT_CURRENCY, SupportedCurrency } from '../../common/currency';
+import { MarketCountryCode } from '../../common/market';
 
 // Minimal fake of the slice of Repository<T> this service actually calls.
 // Deliberately not a full mock of TypeORM's Repository — just what's used.
@@ -42,10 +45,12 @@ describe('ShipmentsService', () => {
   let ridersRepo: ReturnType<typeof mockRepo>;
   let historyRepo: ReturnType<typeof mockRepo>;
   let proofRepo: ReturnType<typeof mockRepo>;
+  let usersRepo: ReturnType<typeof mockRepo>;
   let pricingService: { calculatePrice: jest.Mock };
 
   const DEFAULT_QUOTE = {
     pricingConfigId: 'config-1',
+    currency: DEFAULT_CURRENCY,
     basePrice: '5000.00',
     distanceCharge: '0.00',
     weightCharge: '0.00',
@@ -62,6 +67,12 @@ describe('ShipmentsService', () => {
     ridersRepo = mockRepo();
     historyRepo = mockRepo();
     proofRepo = mockRepo();
+    usersRepo = mockRepo();
+    // Default: the requesting customer is a plain TZ-market user, same as
+    // every pre-Phase-4 test fixture — create() only actually queries
+    // this repo when dto.currency is omitted (see the market-fallback
+    // describe block below).
+    usersRepo.findOne.mockResolvedValue({ id: CUSTOMER_ID, countryCode: MarketCountryCode.TZ });
     pricingService = { calculatePrice: jest.fn(async () => DEFAULT_QUOTE) };
 
     // Fake DataSource: transaction() just invokes the callback with a
@@ -95,6 +106,7 @@ describe('ShipmentsService', () => {
         { provide: getRepositoryToken(Rider), useValue: ridersRepo },
         { provide: getRepositoryToken(ShipmentStatusHistory), useValue: historyRepo },
         { provide: getRepositoryToken(ProofOfDelivery), useValue: proofRepo },
+        { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: PricingService, useValue: pricingService },
         { provide: getDataSourceToken(), useValue: dataSource },
       ],
@@ -165,6 +177,58 @@ describe('ShipmentsService', () => {
       );
       expect(shipmentsRepo.save).not.toHaveBeenCalled();
       expect(historyRepo.save).not.toHaveBeenCalled();
+    });
+
+    describe('currency market fallback (Phase 4)', () => {
+      it('uses the requesting customer\'s registered market when currency is omitted', async () => {
+        usersRepo.findOne.mockResolvedValue({
+          id: CUSTOMER_ID,
+          countryCode: MarketCountryCode.KE,
+        });
+
+        await service.create(dto, CUSTOMER_ID);
+
+        expect(usersRepo.findOne).toHaveBeenCalledWith({ where: { id: CUSTOMER_ID } });
+        expect(pricingService.calculatePrice).toHaveBeenCalledWith(
+          expect.objectContaining({ currency: SupportedCurrency.KES }),
+        );
+      });
+
+      it('does not look up the customer at all when currency is explicitly given', async () => {
+        await service.create({ ...dto, currency: SupportedCurrency.RWF }, CUSTOMER_ID);
+
+        expect(usersRepo.findOne).not.toHaveBeenCalled();
+        expect(pricingService.calculatePrice).toHaveBeenCalledWith(
+          expect.objectContaining({ currency: SupportedCurrency.RWF }),
+        );
+      });
+
+      it('falls back to DEFAULT_MARKET (TZS) if the customer record is somehow missing', async () => {
+        usersRepo.findOne.mockResolvedValue(undefined);
+
+        await service.create(dto, CUSTOMER_ID);
+
+        expect(pricingService.calculatePrice).toHaveBeenCalledWith(
+          expect.objectContaining({ currency: DEFAULT_CURRENCY }),
+        );
+      });
+
+      it('stores the resolved quote currency on the created shipment', async () => {
+        usersRepo.findOne.mockResolvedValue({
+          id: CUSTOMER_ID,
+          countryCode: MarketCountryCode.UG,
+        });
+        pricingService.calculatePrice.mockResolvedValue({
+          ...DEFAULT_QUOTE,
+          currency: SupportedCurrency.UGX,
+        });
+
+        await service.create(dto, CUSTOMER_ID);
+
+        expect(shipmentsRepo.create).toHaveBeenCalledWith(
+          expect.objectContaining({ currency: SupportedCurrency.UGX }),
+        );
+      });
     });
   });
 

@@ -10,6 +10,7 @@ import { ProofOfDelivery } from '../../database/entities/proof-of-delivery.entit
 import { Rider, RiderStatus } from '../../database/entities/rider.entity';
 import { Shipment, ShipmentStatus } from '../../database/entities/shipment.entity';
 import { ShipmentStatusHistory } from '../../database/entities/shipment-status-history.entity';
+import { User } from '../../database/entities/user.entity';
 import { Role } from '../../database/entities/user-role.entity';
 import { JwtPayload } from '../auth/jwt-payload.interface';
 import { PricingService } from '../pricing/pricing.service';
@@ -22,6 +23,7 @@ import {
   isValidShipmentStatusTransition,
   SHIPMENT_STATUS_TIMESTAMP_FIELD,
 } from './shipment-status.transitions';
+import { currencyForMarket, DEFAULT_MARKET } from '../../common/market';
 
 const ADMIN_ROLES = [Role.ADMIN, Role.SUPER_ADMIN];
 
@@ -36,6 +38,8 @@ export class ShipmentsService {
     private readonly statusHistoryRepo: Repository<ShipmentStatusHistory>,
     @InjectRepository(ProofOfDelivery)
     private readonly proofOfDeliveryRepo: Repository<ProofOfDelivery>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     private readonly pricingService: PricingService,
     @InjectDataSource()
     private readonly dataSource: DataSource,
@@ -49,11 +53,25 @@ export class ShipmentsService {
     const distanceKm =
       haversineDistanceMeters(dto.pickupLocation, dto.dropoffLocation) / 1000;
 
+    // No explicit currency on the request → default to the requesting
+    // customer's registered market instead of a hardcoded currency, so a
+    // customer who registered in Kenya gets KES quotes without every
+    // frontend call needing to pass currency explicitly. Falls back to
+    // DEFAULT_MARKET (TZS) only if the customer record itself can't be
+    // found, which shouldn't happen for an authenticated request but
+    // shouldn't block shipment creation if it somehow does.
+    let currency = dto.currency;
+    if (currency === undefined) {
+      const customer = await this.usersRepo.findOne({ where: { id: customerId } });
+      currency = currencyForMarket(customer?.countryCode ?? DEFAULT_MARKET);
+    }
+
     // Computed and validated BEFORE the shipment is inserted — if pricing
     // fails (most likely: no active PricingConfig covers right now), the
     // whole create() throws and nothing gets written, rather than leaving
     // an orphaned shipment stuck at CREATED with a null price forever.
     const quote = await this.pricingService.calculatePrice({
+      currency,
       distanceKm,
       weightKg: dto.packageWeightKg,
     });
@@ -76,6 +94,7 @@ export class ShipmentsService {
             ? dto.packageWeightKg.toString()
             : null,
         packageDescription: dto.packageDescription ?? null,
+        currency: quote.currency,
         price: quote.price,
         commission: quote.commission,
         riderPayout: quote.riderPayout,
@@ -215,36 +234,28 @@ export class ShipmentsService {
     return saved;
   }
 
-  // Called by PaymentsService once a payment is confirmed — either a
-  // provider webhook lands as COMPLETED, or (for CASH) the payment is
-  // accepted at checkout time, since cash isn't collected until delivery
-  // but the shipment still needs to reach riders immediately. The one
-  // remaining gap flagged in the README's Piece 11 "Known
-  // simplifications". Lives here rather than in Payments so both status
-  // transitions still go through this module's own state machine
-  // (isValidShipmentStatusTransition) instead of Payments reaching in
-  // and mutating shipment.status directly.
+  // Called by PaymentsService once a payment webhook lands as COMPLETED —
+  // the one remaining gap flagged in the README's Piece 11 "Known
+  // simplifications". Lives here rather than in Payments so the
+  // QUOTED -> CONFIRMED transition still goes through this module's own
+  // state machine (isValidShipmentStatusTransition) instead of Payments
+  // reaching in and mutating shipment.status directly.
   //
-  // Moves QUOTED -> CONFIRMED -> ASSIGNMENT_PENDING in one call: CONFIRMED
-  // is a transient bookkeeping state (payment succeeded), not something a
-  // human needs to act on before a rider can see the shipment, so there's
-  // no reason to leave it sitting there. Both transitions are valid moves
-  // per shipment-status.transitions.ts, recorded as two separate history
-  // rows so the audit trail still shows both actually happened.
-  //
-  // Deliberately tolerant, not throwing: a shipment might already be past
-  // QUOTED (a retried webhook, or cancelled in the meantime) by the time
-  // this runs. Either way that's a no-op here, not a failure — a payment
+  // Deliberately tolerant, not throwing: a shipment might already be
+  // CONFIRMED (a retried webhook that slipped past the payment-level
+  // idempotency check some other way) or might have moved past QUOTED
+  // entirely (e.g. cancelled) by the time the payment provider calls
+  // back. Either way that's a no-op here, not a failure — a payment
   // that already succeeded shouldn't get an error surfaced to the
-  // provider just because the shipment side has nothing left to do.
+  // provider just because the shipment side has nothing to do.
   //
   // Accepts an optional EntityManager so PaymentsService can run this
   // inside the same DB transaction as the payment save (see Piece 12 in
-  // the README) — the payment write and both shipment writes either all
-  // commit or all roll back. Falls back to this service's own injected
+  // the README) — the payment write and this shipment write either both
+  // commit or both roll back. Falls back to this service's own injected
   // repos when called without one, so it still works standalone (and in
   // the existing unit tests, which mock those repos directly).
-   async confirmAfterPayment(shipmentId: string, manager?: EntityManager): Promise<void> {
+  async confirmAfterPayment(shipmentId: string, manager?: EntityManager): Promise<void> {
     const shipmentsRepo = manager ? manager.getRepository(Shipment) : this.shipmentsRepo;
     const historyRepo = manager
       ? manager.getRepository(ShipmentStatusHistory)
@@ -255,39 +266,19 @@ export class ShipmentsService {
       return;
     }
 
-    // Built as fresh objects rather than mutating `shipment` in place
-    // twice — two separate .save() calls need two distinct snapshots,
-    // not the same reference mutated out from under the first call.
-    const confirmedShipment = { ...shipment, status: ShipmentStatus.CONFIRMED };
-    await shipmentsRepo.save(confirmedShipment);
+    shipment.status = ShipmentStatus.CONFIRMED;
+    await shipmentsRepo.save(shipment);
 
     // changedBy is null: this transition was driven by a payment
-    // provider webhook (or cash acceptance), not a logged-in user action.
-    const confirmedEntry = historyRepo.create({
+    // provider webhook, not a logged-in user action.
+    const entry = historyRepo.create({
       shipmentId,
       status: ShipmentStatus.CONFIRMED,
       changedBy: null,
       reason: 'Payment completed',
     });
-    await historyRepo.save(confirmedEntry);
-
-    // Immediately continue on to ASSIGNMENT_PENDING — see the method
-    // comment above for why this isn't left as a separate manual step.
-    if (!isValidShipmentStatusTransition(confirmedShipment.status, ShipmentStatus.ASSIGNMENT_PENDING)) {
-      return;
-    }
-
-    const queuedShipment = { ...confirmedShipment, status: ShipmentStatus.ASSIGNMENT_PENDING };
-    await shipmentsRepo.save(queuedShipment);
-
-    const queuedEntry = historyRepo.create({
-      shipmentId,
-      status: ShipmentStatus.ASSIGNMENT_PENDING,
-      changedBy: null,
-      reason: 'Ready for rider assignment',
-    });
-    await historyRepo.save(queuedEntry);
-   }
+    await historyRepo.save(entry);
+  }
 
   // A rider claims an ASSIGNMENT_PENDING shipment for themselves. No
   // dispatcher/admin override yet — see the README's "Known

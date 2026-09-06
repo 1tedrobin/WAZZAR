@@ -9,10 +9,20 @@ import {
   Min,
 } from 'class-validator';
 import { PricingMode, SurgeWindow } from '../../../database/entities/pricing-config.entity';
+import { SupportedCurrency } from '../../../common/currency';
 
 export class CreatePricingConfigDto {
   @IsEnum(PricingMode)
   pricingMode: PricingMode;
+
+  // Which market this config prices for. Deliberately no
+  // `= DEFAULT_CURRENCY` initializer — PricingService.createConfig
+  // applies the actual TZS fallback via `dto.currency ?? DEFAULT_CURRENCY`,
+  // same reasoning as CalculatePriceDto.currency. Immutable once set —
+  // not present on UpdatePricingConfigDto.
+  @IsEnum(SupportedCurrency)
+  @IsOptional()
+  currency?: SupportedCurrency;
 
   @Type(() => Number)
   @IsNumber()

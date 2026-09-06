@@ -26,7 +26,7 @@ import React, { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import {
   Search, ChevronRight, Banknote, Bike, Package, TrendingUp,
   Users, Menu, Bell, X, Activity, Briefcase, LifeBuoy, AlertTriangle, Tag,
-  RefreshCw, LogOut, Loader2, Lock,
+  RefreshCw, LogOut, Loader2, Lock, Warehouse, Truck, Building2,
 } from "lucide-react";
 import * as api from "./api";
 
@@ -55,9 +55,21 @@ const COLORS = {
 const fmtTZS = (n) => `TZS ${Number(n || 0).toLocaleString("en-US")}`;
 const fmtDate = (d) => (d ? new Date(d).toLocaleString() : "—");
 
+// `dispatcherVisible: true` items are the only ones a DISPATCHER-only
+// account (no ADMIN/SUPER_ADMIN role) sees in the sidebar — see
+// AppShell. Just Dispatch: Deliveries/Riders/Finance/etc. all read as
+// the owning customer or ADMIN in the backend (ShipmentsService.
+// assertCanAccess, PaymentsService, ...), so a dispatcher-only account
+// would 403 on all of them; Hubs/Carriers are DISPATCHER-readable
+// backend-side but writes aren't, and a dispatcher's day-to-day (the
+// Phase 2 Intercity section on Dispatch) already shows hub/route names
+// inline without needing the standalone pages.
 const NAV = [
-  { id: "dispatch", label: "Dispatch", icon: Activity },
+  { id: "dispatch", label: "Dispatch", icon: Activity, dispatcherVisible: true },
   { id: "deliveries", label: "Deliveries", icon: Package },
+  { id: "hubs", label: "Hubs", icon: Warehouse },
+  { id: "carriers", label: "Carriers", icon: Truck },
+  { id: "partners", label: "Partner Operators", icon: Building2 },
   { id: "riders", label: "Riders", icon: Bike },
   { id: "finance", label: "Finance", icon: Banknote },
   { id: "pricing", label: "Pricing", icon: Tag },
@@ -351,7 +363,7 @@ function LoginScreen({ onLoggedIn }) {
 /* Layout                                                                   */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ page, setPage, open, setOpen, user, onLogout }) {
+function Sidebar({ page, setPage, open, setOpen, user, onLogout, nav }) {
   return (
     <>
       {open && <div onClick={() => setOpen(false)} className="fixed inset-0 lg:hidden z-40" style={{ backgroundColor: "rgba(16,34,28,0.5)" }} />}
@@ -367,7 +379,7 @@ function Sidebar({ page, setPage, open, setOpen, user, onLogout }) {
           </div>
         </div>
         <div className="flex-1 px-3 flex flex-col gap-1 overflow-y-auto">
-          {NAV.map((n) => {
+          {nav.map((n) => {
             const active = page === n.id;
             const disabled = !!NOT_WIRED[n.id];
             return (
@@ -510,14 +522,180 @@ function AssignModal({ shipment, onClose, onAssigned }) {
   );
 }
 
+const PENDING_LEG_COLUMNS = [
+  { key: "shipmentId", label: "Shipment", render: (r) => <span className="font-mono text-xs">{r.shipmentId.slice(0, 8)}…</span> },
+  { key: "leg", label: "Leg", render: (r) => `#${r.sequence} · ${r.legType}` },
+  { key: "route", label: "Route", render: (r) => `${r.fromLocation?.address || "—"} → ${r.toLocation?.address || "—"}` },
+  { key: "createdAt", label: "Created", render: (r) => fmtDate(r.createdAt) },
+];
+
+function AssignLegRiderModal({ leg, onlineRiders, onClose, onAssigned }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const doAssign = async (riderId) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.assignLegRider(leg.id, riderId);
+      onAssigned();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Assign rider — leg #${leg.sequence}`} onClose={onClose}>
+      <div className="flex flex-col gap-3 mb-4">
+        <Row label="Route" value={`${leg.fromLocation?.address || "—"} → ${leg.toLocation?.address || "—"}`} />
+      </div>
+      <ErrorBanner message={error} />
+      {onlineRiders.length === 0 ? (
+        <p className="text-sm mb-4" style={{ color: COLORS.inkFaint }}>No online, active riders available right now.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {onlineRiders.map((r) => (
+            <div key={r.id} className="rounded-xl px-3 py-2.5 flex items-center justify-between gap-3" style={{ backgroundColor: COLORS.paperDim }}>
+              <div>
+                <p className="text-sm font-bold" style={{ color: COLORS.ink }}>{r.vehicleType || "Rider"} {r.vehicleRegistration || ""}</p>
+                <p className="text-xs font-mono" style={{ color: COLORS.inkFaint }}>{r.id}</p>
+              </div>
+              <button disabled={busy} onClick={() => doAssign(r.id)} className="rounded-lg px-3 py-1.5 text-xs font-bold flex-shrink-0 disabled:opacity-50" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>
+                Assign
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function AssignLegCarrierModal({ leg, onClose, onAssigned }) {
+  const { data: carriers, loading, error: loadError } = useLoad(() => api.listCarriers(), []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const doAssign = async (carrierId) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.assignLegCarrier(leg.id, carrierId);
+      onAssigned();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  const activeCarriers = (carriers || []).filter((c) => c.status === "ACTIVE");
+
+  return (
+    <Modal title={`Assign carrier — leg #${leg.sequence}`} onClose={onClose}>
+      <div className="flex flex-col gap-3 mb-4">
+        <Row label="Route" value={`${leg.fromLocation?.address || "—"} → ${leg.toLocation?.address || "—"}`} />
+      </div>
+      <ErrorBanner message={error} />
+      {loading ? (
+        <div className="flex justify-center py-6"><Spinner /></div>
+      ) : loadError ? (
+        <ErrorBanner message={loadError} />
+      ) : activeCarriers.length === 0 ? (
+        <p className="text-sm mb-4" style={{ color: COLORS.inkFaint }}>No ACTIVE carriers on file — add one under Carriers first.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {activeCarriers.map((c) => (
+            <div key={c.id} className="rounded-xl px-3 py-2.5 flex items-center justify-between gap-3" style={{ backgroundColor: COLORS.paperDim }}>
+              <div>
+                <p className="text-sm font-bold" style={{ color: COLORS.ink }}>{c.vehicleType} · {c.registration}</p>
+                <p className="text-xs" style={{ color: COLORS.inkFaint }}>
+                  {(c.routes || []).map((r) => `${r.fromCity} → ${r.toCity}`).join(", ") || "No routes on file"}
+                </p>
+              </div>
+              <button disabled={busy} onClick={() => doAssign(c.id)} className="rounded-lg px-3 py-1.5 text-xs font-bold flex-shrink-0 disabled:opacity-50" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>
+                Assign
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function ActiveLegRow({ leg, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const run = async (action) => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (action === "start") await api.startLeg(leg.id);
+      else if (action === "complete") await api.completeLeg(leg.id);
+      else if (action === "cancel") await api.cancelLeg(leg.id);
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl px-3 py-2.5 mb-2" style={{ backgroundColor: COLORS.paperDim }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-bold flex items-center gap-2 flex-wrap" style={{ color: COLORS.ink }}>
+            #{leg.sequence} · {leg.legType} <Pill status={leg.status} />
+          </p>
+          <p className="text-xs truncate" style={{ color: COLORS.inkFaint }}>
+            {leg.fromLocation?.address || "—"} → {leg.toLocation?.address || "—"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {leg.status === "ASSIGNED" && (
+            <button disabled={busy} onClick={() => run("start")} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ backgroundColor: COLORS.teal, color: COLORS.paper }}>
+              Start
+            </button>
+          )}
+          {leg.status === "IN_PROGRESS" && (
+            <button disabled={busy} onClick={() => run("complete")} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ backgroundColor: COLORS.green, color: COLORS.paper }}>
+              Complete
+            </button>
+          )}
+          <button disabled={busy} onClick={() => run("cancel")} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ backgroundColor: COLORS.coralSoft, color: COLORS.coral }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+      <ErrorBanner message={error} />
+    </div>
+  );
+}
+
 function DispatchPage() {
   const { data, loading, error, reload } = useLoad(() => api.getDispatchQueue(), []);
   const [assignTarget, setAssignTarget] = useState(null);
+
+  const {
+    data: pendingLegs, loading: pendingLegsLoading, error: pendingLegsError, reload: reloadPendingLegs,
+  } = useLoad(() => api.getPendingLegs(), []);
+  const {
+    data: activeLegs, loading: activeLegsLoading, error: activeLegsError, reload: reloadActiveLegs,
+  } = useLoad(() => api.getActiveLegs(), []);
+  const [legRiderTarget, setLegRiderTarget] = useState(null);
+  const [legCarrierTarget, setLegCarrierTarget] = useState(null);
+
+  const reloadLegs = () => { reloadPendingLegs(); reloadActiveLegs(); };
 
   if (loading) return <div className="flex justify-center py-16"><Spinner size={24} /></div>;
   if (error) return <ErrorBanner message={error} />;
 
   const { pendingShipments, onlineRiders } = data;
+  const legsLoading = pendingLegsLoading || activeLegsLoading;
+  const legsError = pendingLegsError || activeLegsError;
+  const allActiveLegs = activeLegs ? [...activeLegs.activeLocalLegs, ...activeLegs.activeTrunkLegs] : [];
 
   return (
     <div>
@@ -533,11 +711,65 @@ function DispatchPage() {
       <p className="text-sm font-extrabold mb-3 mt-6" style={{ color: COLORS.ink }}>Online riders</p>
       <DataTable columns={ONLINE_RIDER_COLUMNS} rows={onlineRiders} emptyLabel="No riders currently online." />
 
+      <p className="text-sm font-extrabold mb-1 mt-8" style={{ color: COLORS.ink }}>Intercity (Phase 2)</p>
+      <p className="text-xs mb-3" style={{ color: COLORS.inkFaint }}>
+        Legs from intercity shipments. Local legs (pickup/dropoff) take a rider from the online list
+        above; trunk legs (hub to hub) take a carrier.
+      </p>
+
+      {legsLoading ? (
+        <div className="flex justify-center py-10"><Spinner size={20} /></div>
+      ) : legsError ? (
+        <ErrorBanner message={legsError} />
+      ) : (
+        <>
+          <p className="text-xs font-bold mb-2 mt-4" style={{ color: COLORS.inkFaint }}>Pending local legs (need a rider)</p>
+          <DataTable
+            columns={PENDING_LEG_COLUMNS}
+            rows={pendingLegs.pendingLocalLegs}
+            onRowClick={setLegRiderTarget}
+            emptyLabel="No local legs waiting on a rider."
+          />
+
+          <p className="text-xs font-bold mb-2 mt-4" style={{ color: COLORS.inkFaint }}>Pending trunk legs (need a carrier)</p>
+          <DataTable
+            columns={PENDING_LEG_COLUMNS}
+            rows={pendingLegs.pendingTrunkLegs}
+            onRowClick={setLegCarrierTarget}
+            emptyLabel="No trunk legs waiting on a carrier."
+          />
+
+          <p className="text-xs font-bold mb-2 mt-4" style={{ color: COLORS.inkFaint }}>Active legs</p>
+          {allActiveLegs.length === 0 ? (
+            <p className="text-sm" style={{ color: COLORS.inkFaint }}>Nothing currently assigned or in progress.</p>
+          ) : (
+            allActiveLegs.map((leg) => (
+              <ActiveLegRow key={leg.id} leg={leg} onChanged={reloadLegs} />
+            ))
+          )}
+        </>
+      )}
+
       {assignTarget && (
         <AssignModal
           shipment={assignTarget}
           onClose={() => setAssignTarget(null)}
           onAssigned={() => { setAssignTarget(null); reload(); }}
+        />
+      )}
+      {legRiderTarget && (
+        <AssignLegRiderModal
+          leg={legRiderTarget}
+          onlineRiders={onlineRiders}
+          onClose={() => setLegRiderTarget(null)}
+          onAssigned={() => { setLegRiderTarget(null); reloadLegs(); }}
+        />
+      )}
+      {legCarrierTarget && (
+        <AssignLegCarrierModal
+          leg={legCarrierTarget}
+          onClose={() => setLegCarrierTarget(null)}
+          onAssigned={() => { setLegCarrierTarget(null); reloadLegs(); }}
         />
       )}
     </div>
@@ -1174,6 +1406,487 @@ function PricingPage() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Phase 2 — Hubs. Full CRUD (see backend HubsController) plus per-hub    */
+/* staff assignment, folded into one modal (see HubForm's embedded        */
+/* HubStaffSection) rather than a separate view.                          */
+/* ---------------------------------------------------------------------- */
+
+const HUB_COLUMNS = [
+  { key: "name", label: "Name" },
+  { key: "city", label: "City" },
+  { key: "address", label: "Address" },
+  { key: "capacityKg", label: "Capacity", render: (r) => (r.capacityKg ? `${r.capacityKg} kg` : "—") },
+  { key: "isActive", label: "Status", render: (r) => <Pill status={r.isActive ? "ACTIVE" : "INACTIVE"} /> },
+];
+
+function HubStaffSection({ hubId }) {
+  const { data: staff, loading, error, reload } = useLoad(() => api.listHubStaff(hubId), [hubId]);
+  const [userId, setUserId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState(null);
+
+  const add = async (e) => {
+    e.preventDefault();
+    if (!userId) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.assignHubStaff(hubId, userId);
+      setUserId("");
+      reload();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (uid) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.removeHubStaff(hubId, uid);
+      reload();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <p className="text-xs font-bold mb-2" style={{ color: COLORS.inkFaint }}>
+        Dispatchers assigned to this hub — the user must already hold the DISPATCHER role.
+      </p>
+      <ErrorBanner message={actionError} />
+      {loading ? (
+        <div className="flex justify-center py-4"><Spinner size={16} /></div>
+      ) : error ? (
+        <ErrorBanner message={error} />
+      ) : staff.length === 0 ? (
+        <p className="text-sm mb-3" style={{ color: COLORS.inkFaint }}>None assigned yet.</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-3">
+          {staff.map((s) => (
+            <div key={s.id} className="rounded-xl px-3 py-2 flex items-center justify-between gap-3" style={{ backgroundColor: COLORS.paperDim }}>
+              <span className="text-xs font-mono" style={{ color: COLORS.ink }}>{s.userId}</span>
+              <button disabled={busy} onClick={() => remove(s.userId)} className="rounded-lg px-2.5 py-1 text-xs font-bold disabled:opacity-50" style={{ backgroundColor: COLORS.coralSoft, color: COLORS.coral }}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <form onSubmit={add} className="flex gap-2">
+        <input className={inputClass} style={inputStyle} placeholder="User ID" value={userId} onChange={(e) => setUserId(e.target.value)} />
+        <PrimaryButton type="submit" disabled={busy || !userId}>{busy ? <Spinner size={14} /> : "Add"}</PrimaryButton>
+      </form>
+    </div>
+  );
+}
+
+function HubForm({ initial, onClose, onSaved, isNew }) {
+  const [form, setForm] = useState({
+    name: initial?.name || "",
+    city: initial?.city || "",
+    latitude: initial?.latitude || "",
+    longitude: initial?.longitude || "",
+    address: initial?.address || "",
+    capacityKg: initial?.capacityKg || "",
+    isActive: initial ? initial.isActive : true,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const dto = {
+      name: form.name,
+      city: form.city,
+      latitude: Number(form.latitude),
+      longitude: Number(form.longitude),
+      address: form.address,
+    };
+    if (form.capacityKg !== "") dto.capacityKg = Number(form.capacityKg);
+    if (!isNew) dto.isActive = !!form.isActive;
+    try {
+      if (isNew) await api.createHub(dto);
+      else await api.updateHub(initial.id, dto);
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={isNew ? "New hub" : `Edit — ${initial.name}`} onClose={onClose} maxWidth={480}>
+      <ErrorBanner message={error} />
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="Name"><input className={inputClass} style={inputStyle} value={form.name} onChange={set("name")} required /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="City"><input className={inputClass} style={inputStyle} value={form.city} onChange={set("city")} required /></Field>
+          <Field label="Capacity (kg)"><input className={inputClass} style={inputStyle} type="number" value={form.capacityKg} onChange={set("capacityKg")} /></Field>
+          <Field label="Latitude"><input className={inputClass} style={inputStyle} type="number" step="0.00000001" value={form.latitude} onChange={set("latitude")} required /></Field>
+          <Field label="Longitude"><input className={inputClass} style={inputStyle} type="number" step="0.00000001" value={form.longitude} onChange={set("longitude")} required /></Field>
+        </div>
+        <Field label="Address"><input className={inputClass} style={inputStyle} value={form.address} onChange={set("address")} required /></Field>
+        {!isNew && (
+          <label className="flex items-center gap-2 text-xs font-bold" style={{ color: COLORS.inkFaint }}>
+            <input type="checkbox" checked={!!form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+            Active
+          </label>
+        )}
+        <PrimaryButton type="submit" disabled={busy}>{busy ? <Spinner size={14} /> : isNew ? "Create hub" : "Save changes"}</PrimaryButton>
+      </form>
+      {!isNew && (
+        <div className="pt-4 mt-4" style={{ borderTop: `1px solid ${COLORS.paperDim}` }}>
+          <HubStaffSection hubId={initial.id} />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function HubsPage() {
+  const { data: hubs, loading, error, reload } = useLoad(() => api.listHubs(), []);
+  const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  if (loading) return <div className="flex justify-center py-16"><Spinner size={24} /></div>;
+  if (error) return <ErrorBanner message={error} />;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>Physical transfer points intercity legs hand off at. Click a row to edit or manage its staff.</p>
+        <PrimaryButton onClick={() => setCreating(true)}>New hub</PrimaryButton>
+      </div>
+      <DataTable columns={HUB_COLUMNS} rows={hubs} onRowClick={setEditing} emptyLabel="No hubs yet." />
+      {(editing || creating) && (
+        <HubForm
+          initial={editing}
+          isNew={creating}
+          onClose={() => { setEditing(null); setCreating(false); }}
+          onSaved={() => { setEditing(null); setCreating(false); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Phase 2 — Carriers. Each belongs to a Partner Operator (see below);    */
+/* create requires at least one operator to exist first.                  */
+/* ---------------------------------------------------------------------- */
+
+const CARRIER_VEHICLE_TYPES = ["BUS", "TRUCK", "VAN"];
+const CARRIER_STATUS_OPTIONS = ["ACTIVE", "INACTIVE"];
+
+function RouteEditor({ routes, onChange }) {
+  const addRoute = () => onChange([...routes, { fromCity: "", toCity: "" }]);
+  const updateRoute = (i, key, value) => {
+    const next = routes.slice();
+    next[i] = { ...next[i], [key]: value };
+    onChange(next);
+  };
+  const removeRoute = (i) => onChange(routes.filter((_, idx) => idx !== i));
+
+  return (
+    <div className="flex flex-col gap-2">
+      {routes.map((r, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <input className={inputClass} style={inputStyle} placeholder="From city" value={r.fromCity} onChange={(e) => updateRoute(i, "fromCity", e.target.value)} />
+          <input className={inputClass} style={inputStyle} placeholder="To city" value={r.toCity} onChange={(e) => updateRoute(i, "toCity", e.target.value)} />
+          <button type="button" onClick={() => removeRoute(i)} className="flex-shrink-0" aria-label="Remove route">
+            <X size={14} color={COLORS.inkFaint} />
+          </button>
+        </div>
+      ))}
+      <button type="button" onClick={addRoute} className="text-xs font-bold text-left" style={{ color: COLORS.teal }}>+ Add route</button>
+    </div>
+  );
+}
+
+function CarrierForm({ initial, operators, onClose, onSaved, isNew }) {
+  const [form, setForm] = useState({
+    partnerOperatorId: initial?.partnerOperatorId || operators[0]?.id || "",
+    vehicleType: initial?.vehicleType || "BUS",
+    registration: initial?.registration || "",
+    capacityKg: initial?.capacityKg || "",
+    status: initial?.status || "ACTIVE",
+  });
+  const [routes, setRoutes] = useState(initial?.routes || []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const cleanRoutes = routes.filter((r) => r.fromCity && r.toCity);
+    try {
+      if (isNew) {
+        const dto = {
+          partnerOperatorId: form.partnerOperatorId,
+          vehicleType: form.vehicleType,
+          registration: form.registration,
+          routes: cleanRoutes,
+        };
+        if (form.capacityKg !== "") dto.capacityKg = Number(form.capacityKg);
+        await api.createCarrier(dto);
+      } else {
+        const dto = {
+          vehicleType: form.vehicleType,
+          registration: form.registration,
+          routes: cleanRoutes,
+          status: form.status,
+        };
+        if (form.capacityKg !== "") dto.capacityKg = Number(form.capacityKg);
+        await api.updateCarrier(initial.id, dto);
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={isNew ? "New carrier" : "Edit carrier"} onClose={onClose} maxWidth={480}>
+      <ErrorBanner message={error} />
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        {isNew && (
+          <Field label="Partner operator">
+            <select className={inputClass} style={inputStyle} value={form.partnerOperatorId} onChange={set("partnerOperatorId")} required>
+              <option value="">Choose…</option>
+              {operators.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </Field>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Vehicle type">
+            <select className={inputClass} style={inputStyle} value={form.vehicleType} onChange={set("vehicleType")}>
+              {CARRIER_VEHICLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </Field>
+          <Field label="Registration"><input className={inputClass} style={inputStyle} value={form.registration} onChange={set("registration")} required /></Field>
+          <Field label="Capacity (kg)"><input className={inputClass} style={inputStyle} type="number" value={form.capacityKg} onChange={set("capacityKg")} /></Field>
+          {!isNew && (
+            <Field label="Status">
+              <select className={inputClass} style={inputStyle} value={form.status} onChange={set("status")}>
+                {CARRIER_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+          )}
+        </div>
+        <Field label="Routes">
+          <RouteEditor routes={routes} onChange={setRoutes} />
+        </Field>
+        <PrimaryButton type="submit" disabled={busy}>{busy ? <Spinner size={14} /> : isNew ? "Create carrier" : "Save changes"}</PrimaryButton>
+      </form>
+    </Modal>
+  );
+}
+
+function CarriersPage() {
+  const { data: carriers, loading, error, reload } = useLoad(() => api.listCarriers(), []);
+  const { data: operators } = useLoad(() => api.listPartnerOperators(), []);
+  const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  if (loading) return <div className="flex justify-center py-16"><Spinner size={24} /></div>;
+  if (error) return <ErrorBanner message={error} />;
+
+  const operatorsById = Object.fromEntries((operators || []).map((o) => [o.id, o]));
+  const columns = [
+    { key: "registration", label: "Registration" },
+    { key: "vehicleType", label: "Type" },
+    { key: "operator", label: "Operator", render: (r) => operatorsById[r.partnerOperatorId]?.name || `${r.partnerOperatorId.slice(0, 8)}…` },
+    { key: "routes", label: "Routes", render: (r) => (r.routes || []).map((rt) => `${rt.fromCity} → ${rt.toCity}`).join(", ") || "—" },
+    { key: "status", label: "Status", render: (r) => <Pill status={r.status} /> },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>Buses/trucks/vans belonging to a partner operator, used for trunk legs.</p>
+        <PrimaryButton onClick={() => setCreating(true)} disabled={!operators || operators.length === 0}>New carrier</PrimaryButton>
+      </div>
+      {operators && operators.length === 0 && (
+        <p className="text-xs mb-3" style={{ color: COLORS.coral }}>Add a partner operator first — a carrier needs one to belong to.</p>
+      )}
+      <DataTable columns={columns} rows={carriers} onRowClick={setEditing} emptyLabel="No carriers yet." />
+      {(editing || creating) && (
+        <CarrierForm
+          initial={editing}
+          operators={operators || []}
+          isNew={creating}
+          onClose={() => { setEditing(null); setCreating(false); }}
+          onSaved={() => { setEditing(null); setCreating(false); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Phase 2 — Partner Operators. Create/rotate issues a raw API key,       */
+/* shown exactly once (see PartnerOperatorsService) — ApiKeyReveal is a   */
+/* dedicated modal for that moment so it can't be mistaken for the        */
+/* regular edit form and accidentally dismissed unread.                   */
+/* ---------------------------------------------------------------------- */
+
+const PARTNER_OPERATOR_COLUMNS = [
+  { key: "name", label: "Name" },
+  { key: "phone", label: "Phone", render: (r) => r.phone || "—" },
+  { key: "email", label: "Email", render: (r) => r.email || "—" },
+  { key: "status", label: "Status", render: (r) => <Pill status={r.status} /> },
+  { key: "createdAt", label: "Onboarded", render: (r) => fmtDate(r.createdAt) },
+];
+
+function ApiKeyReveal({ apiKey, onClose }) {
+  return (
+    <Modal title="API key — copy this now" onClose={onClose} maxWidth={480}>
+      <p className="text-xs mb-3 font-semibold" style={{ color: COLORS.coral }}>
+        Shown once. It cannot be retrieved again — only rotated (which invalidates it immediately).
+      </p>
+      <div className="rounded-xl px-3 py-3 mb-4 font-mono text-xs break-all" style={{ backgroundColor: COLORS.paperDim, color: COLORS.ink }}>
+        {apiKey}
+      </div>
+      <PrimaryButton onClick={onClose}>Done</PrimaryButton>
+    </Modal>
+  );
+}
+
+function PartnerOperatorForm({ initial, onClose, onSaved, isNew }) {
+  const [form, setForm] = useState({
+    name: initial?.name || "",
+    phone: initial?.phone || "",
+    email: initial?.email || "",
+    status: initial?.status || "ACTIVE",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      if (isNew) {
+        const result = await api.createPartnerOperator({
+          name: form.name,
+          phone: form.phone || undefined,
+          email: form.email || undefined,
+        });
+        onSaved(result.apiKey);
+      } else {
+        await api.updatePartnerOperator(initial.id, {
+          name: form.name,
+          phone: form.phone || undefined,
+          email: form.email || undefined,
+          status: form.status,
+        });
+        onSaved();
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rotate = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.rotatePartnerOperatorKey(initial.id);
+      onSaved(result.apiKey);
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={isNew ? "New partner operator" : "Edit partner operator"} onClose={onClose} maxWidth={480}>
+      <ErrorBanner message={error} />
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="Name"><input className={inputClass} style={inputStyle} value={form.name} onChange={set("name")} required /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Phone"><input className={inputClass} style={inputStyle} value={form.phone} onChange={set("phone")} /></Field>
+          <Field label="Email"><input className={inputClass} style={inputStyle} type="email" value={form.email} onChange={set("email")} /></Field>
+        </div>
+        {!isNew && (
+          <Field label="Status">
+            <select className={inputClass} style={inputStyle} value={form.status} onChange={set("status")}>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="SUSPENDED">SUSPENDED</option>
+            </select>
+          </Field>
+        )}
+        <PrimaryButton type="submit" disabled={busy}>{busy ? <Spinner size={14} /> : isNew ? "Create & issue API key" : "Save changes"}</PrimaryButton>
+      </form>
+      {!isNew && (
+        <div className="pt-4 mt-4" style={{ borderTop: `1px solid ${COLORS.paperDim}` }}>
+          <p className="text-xs font-bold mb-2" style={{ color: COLORS.inkFaint }}>API key</p>
+          <p className="text-xs mb-2" style={{ color: COLORS.inkFaint }}>Rotating immediately invalidates the operator's current key.</p>
+          <SecondaryButton onClick={rotate} disabled={busy}>{busy ? <Spinner size={14} /> : "Rotate key"}</SecondaryButton>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function PartnerOperatorsPage() {
+  const { data: operators, loading, error, reload } = useLoad(() => api.listPartnerOperators(), []);
+  const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [revealedKey, setRevealedKey] = useState(null);
+
+  if (loading) return <div className="flex justify-center py-16"><Spinner size={24} /></div>;
+  if (error) return <ErrorBanner message={error} />;
+
+  const handleSaved = (apiKey) => {
+    setEditing(null);
+    setCreating(false);
+    reload();
+    if (apiKey) setRevealedKey(apiKey);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs" style={{ color: COLORS.inkFaint }}>Bus/trucking companies WAZZAR contracts with for trunk legs.</p>
+        <PrimaryButton onClick={() => setCreating(true)}>New partner operator</PrimaryButton>
+      </div>
+      <DataTable columns={PARTNER_OPERATOR_COLUMNS} rows={operators} onRowClick={setEditing} emptyLabel="No partner operators yet." />
+      {(editing || creating) && (
+        <PartnerOperatorForm
+          initial={editing}
+          isNew={creating}
+          onClose={() => { setEditing(null); setCreating(false); }}
+          onSaved={handleSaved}
+        />
+      )}
+      {revealedKey && <ApiKeyReveal apiKey={revealedKey} onClose={() => setRevealedKey(null)} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Support page — ticket inbox + thread, first real backend module for    */
 /* one of the 3 pages that used to be an honest NOT_WIRED stub.           */
 /* ---------------------------------------------------------------------- */
@@ -1612,6 +2325,7 @@ const TITLES = {
   dispatch: "Dispatch", deliveries: "Deliveries", riders: "Riders",
   finance: "Finance", pricing: "Pricing", analytics: "Analytics",
   customers: "Customers", businesses: "Businesses", support: "Support",
+  hubs: "Hubs", carriers: "Carriers", partners: "Partner Operators",
 };
 
 function AppShell({ user, onLogout }) {
@@ -1625,6 +2339,10 @@ function AppShell({ user, onLogout }) {
 
   const { isAdmin, isDispatcher } = api.roleSummary();
   const showRoleWarning = user && !isAdmin && !isDispatcher;
+  // A DISPATCHER-only account (no ADMIN/SUPER_ADMIN) only sees the nav
+  // items it can actually use end-to-end — see NAV's own comment on why
+  // that's just Dispatch today.
+  const visibleNav = isAdmin ? NAV : NAV.filter((n) => n.dispatcherVisible);
 
   let pageContent;
   if (NOT_WIRED[page]) pageContent = <NotWiredPage pageId={page} />;
@@ -1637,6 +2355,9 @@ function AppShell({ user, onLogout }) {
   else if (page === "support") pageContent = <SupportPage />;
   else if (page === "businesses") pageContent = <BusinessesPage />;
   else if (page === "customers") pageContent = <CustomersPage />;
+  else if (page === "hubs") pageContent = <HubsPage />;
+  else if (page === "carriers") pageContent = <CarriersPage />;
+  else if (page === "partners") pageContent = <PartnerOperatorsPage />;
 
   return (
     <div className="min-h-screen w-full" style={{ backgroundColor: COLORS.paperDim, fontFamily: "'Manrope', sans-serif" }}>
@@ -1653,7 +2374,7 @@ function AppShell({ user, onLogout }) {
         }
       `}</style>
 
-      <Sidebar page={page} setPage={setPage} open={sidebarOpen} setOpen={setSidebarOpen} user={user} onLogout={handleLogout} />
+      <Sidebar page={page} setPage={setPage} open={sidebarOpen} setOpen={setSidebarOpen} user={user} onLogout={handleLogout} nav={visibleNav} />
 
       <div className="flex flex-col min-h-screen lg:pl-60">
         <TopBar title={TITLES[page]} onMenuClick={() => setSidebarOpen(true)} />
