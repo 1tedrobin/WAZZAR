@@ -8,6 +8,7 @@ import { dataSourceOptions } from './database/data-source';
 import { envFilePaths } from './env-file';
 import { AdminBusinessesModule } from './modules/admin-businesses/admin-businesses.module';
 import { AdminCustomersModule } from './modules/admin-customers/admin-customers.module';
+import { AdminStaffModule } from './modules/admin-staff/admin-staff.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BusinessCustomersModule } from './modules/business-customers/business-customers.module';
 import { BusinessProfileModule } from './modules/business-profile/business-profile.module';
@@ -65,6 +66,7 @@ import { UploadsModule } from './modules/uploads/uploads.module';
     SupportModule,
     AdminBusinessesModule,
     AdminCustomersModule,
+    AdminStaffModule,
     // Future modules go here as vertical slices are built: UsersModule, ...
   ],
   providers: [
